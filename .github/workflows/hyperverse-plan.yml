@@ -1,0 +1,37 @@
+# Merge-blocking gate: any PR touching the spine or its policies must produce
+# a clean `tofu plan` that also passes every policy in policy/ (conftest).
+# A failing policy here means the PR cannot merge, not a warning, a block.
+name: hyperverse plan + policy gate
+
+on:
+  pull_request:
+    paths:
+      - "hyperverse/**"
+      - "policy/**"
+
+jobs:
+  plan-and-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hyperverse
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.12.5"
+
+      - name: tofu init
+        run: tofu init
+
+      - name: tofu plan
+        run: tofu plan -out=tfplan.binary
+
+      - name: tofu show (JSON)
+        run: tofu show -json tfplan.binary > tfplan.json
+
+      - uses: instrumenta/conftest-action@master
+        with:
+          files: hyperverse/tfplan.json
+          policy: policy

@@ -1,0 +1,44 @@
+Tenant0-execution-plan-2.md
+Tenant0-project-doc-5.md
+
+# Not ready for GitHub yet
+docs/PHASE0_SETUP.md
+
+# OpenTofu / Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+tfplan*
+*.tfplan
+
+# Crossplane / Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Secrets / credentials
+*.pem
+*.key
+*-key.json
+service-account*.json
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# k6 output
+k6-results/
+*.k6.json
