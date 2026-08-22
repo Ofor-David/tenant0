@@ -1,23 +1,21 @@
+variable "folder_id" {
+  description = "Org folder this project is created under"
+  type        = string
+}
+
 variable "billing_account_id" {
   description = "GCP billing account ID with the project credit attached"
   type        = string
 }
 
-variable "org_id" {
-  description = "GCP organization ID (folders and project-per-tenant require an org node)"
-  type        = string
-}
-
 variable "region" {
-  description = "Single pinned region for all resources"
+  description = "Region for the subnet"
   type        = string
-  default     = "us-central1"
 }
 
 variable "zone" {
   description = "Single zone for the zonal GKE cluster (regional would replicate node pools per zone, multiplying cost for no benefit at this project's scale)"
   type        = string
-  default     = "us-central1-a"
 }
 
 variable "crossplane_node_machine_type" {

@@ -1,6 +1,32 @@
-# t0-security: KMS keyring (ring only; per-tenant keys are created by
+# t0-security project: KMS keyring (ring only; per-tenant keys are created by
 # Crossplane in Phase 2, see universe/), Cloud Audit Log sink to BigQuery,
 # Security Command Center.
+
+resource "google_project" "security" {
+  name            = "t0-security"
+  project_id      = "t0-security"
+  folder_id       = var.folder_id
+  billing_account = var.billing_account_id
+}
+
+locals {
+  security_apis = [
+    "cloudkms.googleapis.com",
+    "logging.googleapis.com",
+    "bigquery.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "iam.googleapis.com",
+    "securitycenter.googleapis.com",
+  ]
+}
+
+resource "google_project_service" "security_apis" {
+  for_each = toset(local.security_apis)
+  project  = google_project.security.project_id
+  service  = each.value
+
+  disable_dependent_services = false
+}
 
 resource "google_kms_key_ring" "tenant0" {
   name     = "tenant0-keyring"
@@ -42,4 +68,4 @@ resource "google_bigquery_dataset_iam_member" "audit_sink_writer" {
 # NOTE: enabling Security Command Center (Standard tier) at the org level is
 # not consistently supported via Terraform for org onboarding, this is a
 # documented manual step (console or `gcloud scc` at org level), same
-# category as the t0-mgmt-state bootstrap exception.
+# category as the t0x-mgmt-state bootstrap exception.
