@@ -38,6 +38,7 @@ service-account*.json
 .DS_Store
 .vscode/
 .idea/
+.claude/
 
 # k6 output
 k6-results/
