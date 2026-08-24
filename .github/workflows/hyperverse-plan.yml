@@ -12,11 +12,19 @@ on:
 jobs:
   plan-and-gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     defaults:
       run:
         working-directory: hyperverse
     steps:
       - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/894310531756/locations/global/workloadIdentityPools/github-actions/providers/github"
+          service_account: "tofu-runner@t0x-mgmt-state.iam.gserviceaccount.com"
 
       - uses: opentofu/setup-opentofu@v1
         with:
