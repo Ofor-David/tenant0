@@ -4,7 +4,8 @@
 # the projects that hold state exist.
 terraform {
   backend "gcs" {
-    bucket = "t0-tofu-state"
-    prefix = "state"
+    bucket                      = "t0-tofu-state"
+    prefix                      = "state"
+    impersonate_service_account = "tofu-runner@t0x-mgmt-state.iam.gserviceaccount.com"
   }
 }
