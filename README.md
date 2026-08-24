@@ -13,6 +13,7 @@ through code (OpenTofu + policy-as-code + Crossplane), not console clicks.
 | `hyperverse/` | OpenTofu for the non-tenant infra: `security`, `cicd`, `network` projects, each its own module |
 | `universe/` | Crossplane XRDs and Compositions for tenant stamp-out |
 | `universe-claims/` | Per-tenant Claims requesting an instance of the `universe/` XRD |
+| `universe-engine/` | Helmfile install of Crossplane itself, the control plane that reconciles `universe/` against `universe-claims/` |
 | `policy/` | OPA/Conftest policies enforced in CI against `hyperverse/` |
 | `.github/workflows/` | Merge-blocking `tofu plan` + policy gate on PRs touching `hyperverse/` or `policy/` |
 
