@@ -50,6 +50,7 @@ resource "google_container_node_pool" "crossplane" {
 
   node_config {
     machine_type = var.crossplane_node_machine_type
+    disk_size_gb = 30
 
     taint {
       key    = "dedicated"

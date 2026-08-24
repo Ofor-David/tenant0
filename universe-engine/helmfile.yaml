@@ -1,0 +1,29 @@
+# Installs Crossplane's control plane onto the `crossplane` node pool, matching
+# that pool's taint (see hyperverse/modules/network/gke.tf) so only
+# Crossplane's own controllers schedule there.
+repositories:
+  - name: crossplane-stable
+    url: https://charts.crossplane.io/stable
+
+releases:
+  - name: crossplane
+    namespace: crossplane-system
+    createNamespace: true
+    chart: crossplane-stable/crossplane
+    version: "2.4.0"
+    values:
+      - tolerations:
+          - key: dedicated
+            operator: Equal
+            value: crossplane
+            effect: NoSchedule
+        nodeSelector:
+          cloud.google.com/gke-nodepool: crossplane
+        rbacManager:
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: crossplane
+              effect: NoSchedule
+          nodeSelector:
+            cloud.google.com/gke-nodepool: crossplane

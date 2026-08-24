@@ -6,6 +6,7 @@ variable "folder_id" {
 variable "billing_account_id" {
   description = "GCP billing account ID with the project credit attached"
   type        = string
+  sensitive   = true
 }
 
 variable "region" {

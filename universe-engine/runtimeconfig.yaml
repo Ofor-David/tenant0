@@ -1,0 +1,38 @@
+# Shared runtime config for every GCP provider in providers.yaml: pins them
+# onto the tainted `crossplane` node pool (same reasoning as the Crossplane
+# control plane itself, see hyperverse/modules/network/gke.tf), sets a
+# demo-scale reconcile interval, and creates a fixed-name Kubernetes
+# ServiceAccount that Workload Identity binds to a real GCP service account,
+# so no key file ever gets downloaded. The GCP-side half of this binding is
+# in hyperverse/modules/network/crossplane_provider.tf.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: gcp-provider-runtime
+spec:
+  deploymentTemplate:
+    spec:
+      selector:
+        matchLabels:
+          pkg.crossplane.io/provider: gcp-provider-runtime
+      template:
+        metadata:
+          labels:
+            pkg.crossplane.io/provider: gcp-provider-runtime
+        spec:
+          nodeSelector:
+            cloud.google.com/gke-nodepool: crossplane
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: crossplane
+              effect: NoSchedule
+          containers:
+            - name: package-runtime
+              args:
+                - --poll=1h
+  serviceAccountTemplate:
+    metadata:
+      name: gcp-provider
+      annotations:
+        iam.gke.io/gcp-service-account: crossplane-gcp-provider@t0-host-network.iam.gserviceaccount.com

@@ -1,0 +1,50 @@
+# Scoped GCP provider family, not the monolithic provider-gcp. One Provider
+# per GCP service area the tenant-stamp-out Composition touches: projects,
+# service accounts and IAM (cloudplatform), KMS, Cloud SQL, and compute
+# (Private Service Connect). All four share the ProviderConfig type
+# registered by the family meta-package below.
+#
+# Pinned to v3.0.1, the family's current release as of 2026-08-24 (all five
+# packages release together under one version number).
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-family-gcp
+spec:
+  package: xpkg.upbound.io/upbound/provider-family-gcp:v3.0.1
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-gcp-cloudplatform
+spec:
+  package: xpkg.upbound.io/upbound/provider-gcp-cloudplatform:v3.0.1
+  runtimeConfigRef:
+    name: gcp-provider-runtime
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-gcp-kms
+spec:
+  package: xpkg.upbound.io/upbound/provider-gcp-kms:v3.0.1
+  runtimeConfigRef:
+    name: gcp-provider-runtime
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-gcp-sql
+spec:
+  package: xpkg.upbound.io/upbound/provider-gcp-sql:v3.0.1
+  runtimeConfigRef:
+    name: gcp-provider-runtime
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-gcp-compute
+spec:
+  package: xpkg.upbound.io/upbound/provider-gcp-compute:v3.0.1
+  runtimeConfigRef:
+    name: gcp-provider-runtime
