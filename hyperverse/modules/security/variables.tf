@@ -6,11 +6,13 @@ variable "folder_id" {
 variable "billing_account_id" {
   description = "GCP billing account ID with the project credit attached"
   type        = string
+  sensitive   = true
 }
 
 variable "org_id" {
   description = "GCP organization ID, needed for the org-level audit log sink"
   type        = string
+  sensitive   = true
 }
 
 variable "region" {

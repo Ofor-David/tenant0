@@ -18,6 +18,15 @@ jobs:
     defaults:
       run:
         working-directory: hyperverse
+    env:
+      TF_VAR_billing_account_id: ${{ secrets.TF_VAR_BILLING_ACCOUNT_ID }}
+      TF_VAR_org_id: ${{ secrets.TF_VAR_ORG_ID }}
+      TF_VAR_region: ${{ vars.TF_VAR_REGION }}
+      TF_VAR_crossplane_node_machine_type: ${{ vars.TF_VAR_CROSSPLANE_NODE_MACHINE_TYPE }}
+      TF_VAR_crossplane_node_count: ${{ vars.TF_VAR_CROSSPLANE_NODE_COUNT }}
+      TF_VAR_workloads_node_machine_type: ${{ vars.TF_VAR_WORKLOADS_NODE_MACHINE_TYPE }}
+      TF_VAR_workloads_min_node_count: ${{ vars.TF_VAR_WORKLOADS_MIN_NODE_COUNT }}
+      TF_VAR_workloads_max_node_count: ${{ vars.TF_VAR_WORKLOADS_MAX_NODE_COUNT }}
     steps:
       - uses: actions/checkout@v4
 

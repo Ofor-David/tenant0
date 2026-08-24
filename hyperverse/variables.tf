@@ -1,11 +1,13 @@
 variable "billing_account_id" {
   description = "GCP billing account ID with the project credit attached"
   type        = string
+  sensitive   = true
 }
 
 variable "org_id" {
   description = "GCP organization ID (folders and project-per-tenant require an org node)"
   type        = string
+  sensitive   = true
 }
 
 variable "region" {
