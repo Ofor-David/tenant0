@@ -1,0 +1,9 @@
+# Crossplane v2 Compositions are Pipeline-mode only; the classic bare
+# "resources:" list requires this function to interpret patch-and-transform
+# style resource templates as a pipeline step. Used by universe/composition.yaml.
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.10.9

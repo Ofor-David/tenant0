@@ -48,3 +48,16 @@ spec:
   package: xpkg.upbound.io/upbound/provider-gcp-compute:v3.0.1
   runtimeConfigRef:
     name: gcp-provider-runtime
+---
+# In-cluster provider, manages the Kubernetes-native half of a tenant stamp-out
+# (Namespace, NetworkPolicy, ResourceQuota, Redis Deployment, API-key Secret).
+# Uses the cluster's own API server, not GCP, so its ProviderConfig and
+# runtime config are separate from the GCP providers above.
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-kubernetes
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v1.3.0
+  runtimeConfigRef:
+    name: gcp-provider-runtime

@@ -10,3 +10,46 @@ spec:
   projectID: t0-host-network
   credentials:
     source: InjectedIdentity
+---
+# provider-kubernetes' ProviderConfig: InjectedIdentity here means "use this
+# pod's own in-cluster ServiceAccount token to call the Kubernetes API",
+# unrelated to the GCP InjectedIdentity above. RBAC for that ServiceAccount
+# (gcp-provider, see runtimeconfig.yaml) is granted below.
+apiVersion: kubernetes.crossplane.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: InjectedIdentity
+---
+
+
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provider-kubernetes-tenant-resources
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provider-kubernetes-tenant-resources
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: provider-kubernetes-tenant-resources
+subjects:
+  - kind: ServiceAccount
+    name: gcp-provider
+    namespace: crossplane-system
