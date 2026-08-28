@@ -32,6 +32,7 @@ spec:
                 forProvider:
                   folderId: "${TENANT0_FOLDER_ID}"
                   billingAccount: "${TENANT0_BILLING_ACCOUNT_ID}"
+                  deletionPolicy: DELETE
                 deletionPolicy: Delete
                 providerConfigRef:
                   name: default
