@@ -1,13 +1,16 @@
 # Merge-blocking gate: any PR touching the spine or its policies must produce
 # a clean `tofu plan` that also passes every policy in policy/ (conftest).
 # A failing policy here means the PR cannot merge, not a warning, a block.
+#
+# Triggers on every PR (not path-filtered) so this required check always
+# reports a result; a path-filtered trigger would leave it permanently
+# pending on PRs that don't touch hyperverse/policy, blocking merge forever.
+# The actual plan+gate work is skipped (fast success) when those paths
+# aren't touched.
 name: hyperverse plan + policy gate
 
 on:
   pull_request:
-    paths:
-      - "hyperverse/**"
-      - "policy/**"
 
 jobs:
   plan-and-gate:
@@ -29,25 +32,45 @@ jobs:
       TF_VAR_workloads_max_node_count: ${{ vars.TF_VAR_WORKLOADS_MAX_NODE_COUNT }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check relevant paths
+        id: filter
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if git diff --name-only "origin/$BASE_REF" "$HEAD_SHA" | grep -qE '^(hyperverse|policy)/'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: google-github-actions/auth@v2
+        if: steps.filter.outputs.relevant == 'true'
         with:
           workload_identity_provider: "projects/894310531756/locations/global/workloadIdentityPools/github-actions/providers/github"
 
       - uses: opentofu/setup-opentofu@v1
+        if: steps.filter.outputs.relevant == 'true'
         with:
           tofu_version: "1.12.5"
 
       - name: tofu init
+        if: steps.filter.outputs.relevant == 'true'
         run: tofu init
 
       - name: tofu plan
+        if: steps.filter.outputs.relevant == 'true'
         run: tofu plan -out=tfplan.binary
 
       - name: tofu show (JSON)
+        if: steps.filter.outputs.relevant == 'true'
         run: tofu show -json tfplan.binary > tfplan.json
 
       - name: install conftest
+        if: steps.filter.outputs.relevant == 'true'
         working-directory: /tmp
         run: |
           curl -sSL -o conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v0.69.0/conftest_0.69.0_Linux_x86_64.tar.gz
@@ -55,4 +78,5 @@ jobs:
           sudo mv conftest /usr/local/bin/conftest
 
       - name: conftest test
+        if: steps.filter.outputs.relevant == 'true'
         run: conftest test --policy ../policy tfplan.json
