@@ -1,0 +1,7 @@
+apiVersion: universe.tenant0.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-a
+spec:
+  tenantName: tenant-a
+  sizeTier: small
