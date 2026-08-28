@@ -1,11 +1,5 @@
-# Scoped GCP provider family, not the monolithic provider-gcp. One Provider
-# per GCP service area the tenant-stamp-out Composition touches: projects,
-# service accounts and IAM (cloudplatform), KMS, Cloud SQL, and compute
-# (Private Service Connect). All four share the ProviderConfig type
-# registered by the family meta-package below.
-#
-# Pinned to v3.0.1, the family's current release as of 2026-08-24 (all five
-# packages release together under one version number).
+# Scoped GCP provider family: cloudplatform (projects/IAM), KMS, Cloud SQL,
+# compute (PSC). Pinned to v3.0.1, all five packages release together.
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
 metadata:
@@ -49,10 +43,8 @@ spec:
   runtimeConfigRef:
     name: gcp-provider-runtime
 ---
-# In-cluster provider, manages the Kubernetes-native half of a tenant stamp-out
-# (Namespace, NetworkPolicy, ResourceQuota, Redis Deployment, API-key Secret).
-# Uses the cluster's own API server, not GCP, so its ProviderConfig and
-# runtime config are separate from the GCP providers above.
+# In-cluster provider: Namespace, NetworkPolicy, ResourceQuota, Redis
+# Deployment, API-key Secret. Own ProviderConfig, separate from GCP above.
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
 metadata:

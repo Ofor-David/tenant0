@@ -1,7 +1,5 @@
-# One ProviderConfig, shared by every provider in providers.yaml (the family
-# meta-package registers this shared type, each specific provider reuses it).
-# InjectedIdentity means "use the pod's Workload-Identity-bound GCP service
-# account", not a downloaded key file.
+# Shared ProviderConfig for every GCP provider in providers.yaml.
+# InjectedIdentity: use the pod's Workload-Identity-bound GCP SA, no key file.
 apiVersion: gcp.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
@@ -11,10 +9,8 @@ spec:
   credentials:
     source: InjectedIdentity
 ---
-# provider-kubernetes' ProviderConfig: InjectedIdentity here means "use this
-# pod's own in-cluster ServiceAccount token to call the Kubernetes API",
-# unrelated to the GCP InjectedIdentity above. RBAC for that ServiceAccount
-# (gcp-provider, see runtimeconfig.yaml) is granted below.
+# provider-kubernetes' ProviderConfig. InjectedIdentity here means the pod's
+# own in-cluster ServiceAccount token, unrelated to the GCP one above.
 apiVersion: kubernetes.crossplane.io/v1alpha1
 kind: ProviderConfig
 metadata:
@@ -32,7 +28,7 @@ metadata:
   name: provider-kubernetes-tenant-resources
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "resourcequotas", "secrets"]
+    resources: ["namespaces", "resourcequotas", "secrets", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments"]

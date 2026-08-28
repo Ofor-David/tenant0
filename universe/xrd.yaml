@@ -1,7 +1,5 @@
-# Tenant Claim schema (Phase 2, exec plan §7.1). Crossplane v2: no separate
-# Claim kind, operators create the Tenant XR directly (see universe-claims/).
-# Cluster-scoped since tenant provisioning is an administrative action, not
-# tenant self-service.
+# Tenant schema (exec plan §7.1). v2, no Claim kind — operators create the
+# Tenant XR directly (see universe-claims/). Cluster-scoped: an admin action.
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
@@ -42,6 +40,8 @@ spec:
                 projectId:
                   type: string
                 cloudSqlConnectionName:
+                  type: string
+                cloudSqlPscIpAddress:
                   type: string
           required:
             - spec
