@@ -57,6 +57,9 @@ spec:
               - type: ToCompositeFieldPath
                 fromFieldPath: spec.forProvider.projectId
                 toFieldPath: status.projectId
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.number
+                toFieldPath: status.projectNumber
 
           # Enable Network Connectivity API on the tenant project so it can
           # participate in cross-project PSC service-connection automation
@@ -104,6 +107,31 @@ spec:
                 transforms:
                   - type: string
                     string: {type: Format, fmt: "t0-u-%s-api-sqladmin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Cloud Logging, needed to read Cloud SQL admin audit logs on the tenant project.
+          - name: api-logging
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: logging.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-logging"}
               - type: FromCompositeFieldPath
                 fromFieldPath: spec.tenantName
                 toFieldPath: spec.forProvider.project
@@ -239,6 +267,37 @@ spec:
                   - type: string
                     string: {type: Format, fmt: "t0-u-%s-key"}
 
+          # Grant the tenant's per-project Cloud SQL service agent permission to use
+          # the CMEK key, which lives in t0-security, not the tenant project.
+          - name: kms-key-cloudsql-iam
+            base:
+              apiVersion: kms.gcp.upbound.io/v1beta2
+              kind: CryptoKeyIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudkms.cryptoKeyEncrypterDecrypter
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-key-cloudsql-iam"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.cryptoKeyId
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "projects/t0-security/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: status.projectNumber
+                toFieldPath: spec.forProvider.member
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "serviceAccount:service-%s@gcp-sa-cloud-sql.iam.gserviceaccount.com"}
+
           # Cloud SQL: PSC enabled, IAM DB auth, CMEK, PITR, sized by tier.
           - name: cloudsql
             base:
@@ -299,14 +358,12 @@ spec:
                           result: db-custom-4-15360
                       fallbackTo: Value
                       fallbackValue: db-custom-1-3840
-              - type: CombineFromComposite
-                combine:
-                  variables:
-                    - fromFieldPath: spec.tenantName
-                    - fromFieldPath: spec.tenantName
-                  strategy: string
-                  string: {fmt: "projects/t0-u-%s/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
                 toFieldPath: spec.forProvider.encryptionKeyName
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "projects/t0-security/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
               - type: ToCompositeFieldPath
                 fromFieldPath: status.atProvider.connectionName
                 toFieldPath: status.cloudSqlConnectionName

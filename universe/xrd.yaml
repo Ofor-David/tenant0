@@ -39,6 +39,8 @@ spec:
               properties:
                 projectId:
                   type: string
+                projectNumber:
+                  type: string
                 cloudSqlConnectionName:
                   type: string
                 cloudSqlPscIpAddress:
