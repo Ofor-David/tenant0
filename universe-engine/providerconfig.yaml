@@ -1,7 +1,5 @@
-# One ProviderConfig, shared by every provider in providers.yaml (the family
-# meta-package registers this shared type, each specific provider reuses it).
-# InjectedIdentity means "use the pod's Workload-Identity-bound GCP service
-# account", not a downloaded key file.
+# Shared ProviderConfig for every GCP provider in providers.yaml.
+# InjectedIdentity: use the pod's Workload-Identity-bound GCP SA, no key file.
 apiVersion: gcp.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
@@ -10,3 +8,44 @@ spec:
   projectID: t0-host-network
   credentials:
     source: InjectedIdentity
+---
+# provider-kubernetes' ProviderConfig. InjectedIdentity here means the pod's
+# own in-cluster ServiceAccount token, unrelated to the GCP one above.
+apiVersion: kubernetes.crossplane.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: InjectedIdentity
+---
+
+
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provider-kubernetes-tenant-resources
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provider-kubernetes-tenant-resources
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: provider-kubernetes-tenant-resources
+subjects:
+  - kind: ServiceAccount
+    name: gcp-provider
+    namespace: crossplane-system

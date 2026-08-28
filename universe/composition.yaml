@@ -1,0 +1,646 @@
+# Tenant stamp-out recipe. Pipeline mode, one
+# function-patch-and-transform step standing in for v1's bare resources list.
+#
+# sizeTier tiers: small=db-custom-1-3840/256Mi redis/quota 2cpu-2Gi,
+# medium=db-custom-2-7680/512Mi/4cpu-4Gi, large=db-custom-4-15360/1Gi/8cpu-8Gi.
+# Only small is exercised by tenant-a/tenant-b.
+#
+# Known gaps: pgvector needs a manual `CREATE EXTENSION vector;` after
+# connecting. API key is a placeholder Secret, not real Secret Manager yet.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenants.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: Tenant
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: project
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: Project
+              spec:
+                forProvider:
+                  folderId: "${TENANT0_FOLDER_ID}"
+                  billingAccount: "${TENANT0_BILLING_ACCOUNT_ID}"
+                  deletionPolicy: DELETE
+                deletionPolicy: Delete
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.projectId
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.projectId
+                toFieldPath: status.projectId
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.number
+                toFieldPath: status.projectNumber
+
+          # Enable Network Connectivity API on the tenant project so it can
+          # participate in cross-project PSC service-connection automation
+          # (the producer side of the Cloud SQL PSC endpoint).
+          - name: api-networkconnectivity
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: networkconnectivity.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-networkconnectivity"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Explicitly enable Cloud SQL Admin API on the tenant project rather
+          # than relying on side-effect auto-enablement at first instance create.
+          - name: api-sqladmin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: sqladmin.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-sqladmin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Cloud Logging, needed to read Cloud SQL admin audit logs on the tenant project.
+          - name: api-logging
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: logging.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-logging"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Tenant SA, least-privilege (Cloud SQL client only for now).
+          - name: tenant-sa
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ServiceAccount
+              spec:
+                forProvider:
+                  displayName: Tenant workload identity
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: tenant-sa-iam
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudsql.client
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-cloudsql-client"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
+          # Operator read access to the tenant project, so humans can see and
+          # inspect tenant resources (projects Crossplane creates are otherwise
+          # invisible to any identity not granted a role on them).
+          - name: operator-viewer
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/viewer
+                  member: "${TENANT0_OPERATOR_MEMBER}"
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-operator-viewer"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Operator Cloud SQL admin on the tenant project, so humans can
+          # inspect DB operation logs and manage instances directly.
+          - name: operator-cloudsql-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudsql.admin
+                  member: "${TENANT0_OPERATOR_MEMBER}"
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-operator-cloudsql-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # KMS key in tenant0-keyring, CMEK source for Cloud SQL.
+          - name: kms-key
+            base:
+              apiVersion: kms.gcp.upbound.io/v1beta2
+              kind: CryptoKey
+              spec:
+                forProvider:
+                  keyRing: projects/t0-security/locations/us-central1/keyRings/tenant0-keyring
+                  purpose: ENCRYPT_DECRYPT
+                  rotationPeriod: 7776000s # 90 days
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-key"}
+
+          # Grant the tenant's per-project Cloud SQL service agent permission to use
+          # the CMEK key, which lives in t0-security, not the tenant project.
+          - name: kms-key-cloudsql-iam
+            base:
+              apiVersion: kms.gcp.upbound.io/v1beta2
+              kind: CryptoKeyIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudkms.cryptoKeyEncrypterDecrypter
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-key-cloudsql-iam"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.cryptoKeyId
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "projects/t0-security/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: status.projectNumber
+                toFieldPath: spec.forProvider.member
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "serviceAccount:service-%s@gcp-sa-cloud-sql.iam.gserviceaccount.com"}
+
+          # Cloud SQL: PSC enabled, IAM DB auth, CMEK, PITR, sized by tier.
+          - name: cloudsql
+            base:
+              apiVersion: sql.gcp.upbound.io/v1beta2
+              kind: DatabaseInstance
+              spec:
+                forProvider:
+                  region: us-central1
+                  databaseVersion: POSTGRES_18
+                  deletionProtection: false
+                  settings:
+                    edition: ENTERPRISE
+                    ipConfiguration:
+                      ipv4Enabled: false
+                      pscConfig:
+                        - pscEnabled: true
+                          allowedConsumerProjects: ["${TENANT0_HOST_NETWORK_PROJECT_NUMBER}"]
+                          pscAutoConnections:
+                            - consumerNetwork: projects/t0-host-network/global/networks/t0-hyperverse-vpc
+                              consumerServiceProjectId: t0-host-network
+                    databaseFlags:
+                      - name: cloudsql.iam_authentication
+                        value: "on"
+                    backupConfiguration:
+                      enabled: true
+                      pointInTimeRecoveryEnabled: true
+                      transactionLogRetentionDays: 7
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-db"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.settings.tier
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - type: literal
+                          literal: small
+                          result: db-custom-1-3840
+                        - type: literal
+                          literal: medium
+                          result: db-custom-2-7680
+                        - type: literal
+                          literal: large
+                          result: db-custom-4-15360
+                      fallbackTo: Value
+                      fallbackValue: db-custom-1-3840
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.encryptionKeyName
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "projects/t0-security/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.connectionName
+                toFieldPath: status.cloudSqlConnectionName
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.settings.ipConfiguration.pscConfig[0].pscAutoConnections[0].ipAddress
+                toFieldPath: status.cloudSqlPscIpAddress
+
+          - name: namespace
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: Namespace
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-namespace"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: network-policy
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: networking.k8s.io/v1
+                    kind: NetworkPolicy
+                    metadata:
+                      name: default-deny
+                    spec:
+                      podSelector: {}
+                      policyTypes: [Ingress, Egress]
+                      ingress:
+                        - from: [{podSelector: {}}]
+                      egress:
+                        - to: [{podSelector: {}}]
+                        - to: [] # allow DNS
+                          ports:
+                            - {protocol: UDP, port: 53}
+                            - {protocol: TCP, port: 53}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-default-deny"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: resource-quota
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: ResourceQuota
+                    metadata:
+                      name: tenant-quota
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-quota"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.hard.cpu
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: "2"}
+                        - {type: literal, literal: medium, result: "4"}
+                        - {type: literal, literal: large, result: "8"}
+                      fallbackTo: Value
+                      fallbackValue: "2"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.hard.memory
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: 2Gi}
+                        - {type: literal, literal: medium, result: 4Gi}
+                        - {type: literal, literal: large, result: 8Gi}
+                      fallbackTo: Value
+                      fallbackValue: 2Gi
+
+          # Workload Identity: namespace-scoped KSA <-> tenant GCP SA.
+          - name: tenant-ksa
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: ServiceAccount
+                    metadata:
+                      name: u-workload
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-ksa"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.manifest.metadata.annotations[iam.gke.io/gcp-service-account]
+
+          - name: tenant-wi-binding
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ServiceAccountIAMMember
+              spec:
+                forProvider:
+                  role: roles/iam.workloadIdentityUser
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-wi-binding"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "projects/t0-u-%s/serviceAccounts/t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.serviceAccountId
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.member
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "serviceAccount:t0-host-network.svc.id.goog[u-%s/u-workload]"}
+
+          # Per-tenant Redis, sized by tier.
+          - name: redis
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: redis
+                    spec:
+                      replicas: 1
+                      selector:
+                        matchLabels: {app: redis}
+                      template:
+                        metadata:
+                          labels: {app: redis}
+                        spec:
+                          containers:
+                            - name: redis
+                              image: redis:7-alpine
+                              ports: [{containerPort: 6379}]
+                              resources:
+                                requests: {cpu: 100m}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-redis"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].resources.limits.memory
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: 256Mi}
+                        - {type: literal, literal: medium, result: 512Mi}
+                        - {type: literal, literal: large, result: 1Gi}
+                      fallbackTo: Value
+                      fallbackValue: 256Mi
+
+          # Per-tenant API key, placeholder Secret (see header note).
+          - name: api-key-secret
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: Secret
+                    metadata:
+                      name: tenant-api-key
+                    type: Opaque
+                    stringData:
+                      api-key: PLACEHOLDER-replace-with-Secret-Manager-minted-key
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}

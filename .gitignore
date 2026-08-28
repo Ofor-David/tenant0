@@ -33,6 +33,7 @@ kubeconfig
 service-account*.json
 .env
 .env.*
+!universe/.env.example
 
 # OS / editor
 .DS_Store

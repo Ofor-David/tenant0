@@ -1,0 +1,49 @@
+# Tenant schema. v2, no Claim kind — operators create the
+# Tenant XR directly (see universe-claims/). Cluster-scoped: an admin action.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: tenants.universe.tenant0.io
+spec:
+  group: universe.tenant0.io
+  names:
+    kind: Tenant
+    plural: tenants
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                tenantName:
+                  type: string
+                  description: >-
+                    Unique tenant identifier. Used to derive the GCP project ID,
+                    GKE namespace, and other per-tenant resource names.
+                  pattern: '^[a-z][a-z0-9-]{1,28}[a-z0-9]$'
+                sizeTier:
+                  type: string
+                  description: Controls Cloud SQL machine tier and Redis sizing.
+                  enum: [small, medium, large]
+              required:
+                - tenantName
+                - sizeTier
+            status:
+              type: object
+              properties:
+                projectId:
+                  type: string
+                projectNumber:
+                  type: string
+                cloudSqlConnectionName:
+                  type: string
+                cloudSqlPscIpAddress:
+                  type: string
+          required:
+            - spec
