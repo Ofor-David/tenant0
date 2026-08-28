@@ -6,10 +6,9 @@ reusable schema and recipe, two sibling directories cover the rest:
 - `universe-engine/`, the Crossplane install itself, the control plane that reconciles this
   directory's recipes against `universe-claims/`'s requests
 
-- `xrd.yaml`, the schema a tenant Claim must satisfy (OpenAPI validation, first-line admission control)
+- `xrd.yaml`, the schema a `Tenant` XR instance must satisfy (OpenAPI validation, first-line admission control)
 - `composition.yaml`, the recipe: project, tenant SA, KMS key, Cloud SQL + PSC, GKE namespace,
   NetworkPolicy, Workload Identity, per-tenant Redis, per-tenant API key
-- `policy/`, ValidatingAdmissionPolicy / OPA Gatekeeper for semantic admission control (e.g. reject `roles/owner`)
 
 ## Why this is split across three directories
 
