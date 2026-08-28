@@ -1,4 +1,4 @@
-# Tenant stamp-out recipe (exec plan §7.2). Pipeline mode, one
+# Tenant stamp-out recipe. Pipeline mode, one
 # function-patch-and-transform step standing in for v1's bare resources list.
 #
 # sizeTier tiers: small=db-custom-1-3840/256Mi redis/quota 2cpu-2Gi,

@@ -1,4 +1,4 @@
-# Tenant schema (exec plan §7.1). v2, no Claim kind — operators create the
+# Tenant schema. v2, no Claim kind — operators create the
 # Tenant XR directly (see universe-claims/). Cluster-scoped: an admin action.
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
