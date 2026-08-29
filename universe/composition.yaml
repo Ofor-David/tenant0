@@ -606,6 +606,13 @@ spec:
           # IAM token as the password. Every step is idempotent/retry-safe;
           # backoffLimit absorbs the eventual-consistency gap between
           # creating the DB user and it being usable.
+          #
+          # Caveat (confirmed by deleting the real Cloud SQL instance and
+          # watching the reconcile): if this Job's underlying K8s Job is
+          # deleted out of band, provider-kubernetes does NOT self-heal it
+          # until its next poll cycle, unlike the GCP-backed resources
+          # above, which the provider re-creates immediately. A manual
+          # reconcile-nudge on this Object is needed to force it sooner.
           - name: pgvector-migration
             base:
               apiVersion: kubernetes.crossplane.io/v1alpha2
