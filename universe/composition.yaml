@@ -4,8 +4,6 @@
 # sizeTier tiers: small=db-custom-1-3840/256Mi redis/quota 2cpu-2Gi,
 # medium=db-custom-2-7680/512Mi/4cpu-4Gi, large=db-custom-4-15360/1Gi/8cpu-8Gi.
 # Only small is exercised by tenant-a/tenant-b.
-#
-# Known gaps: API key is a placeholder Secret, not real Secret Manager yet.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -139,6 +137,32 @@ spec:
                   - type: string
                     string: {type: Format, fmt: "t0-u-%s"}
 
+          # Secret Manager, backs the real per-tenant API key (see ESO
+          # resources below: SecretStore/Password/ExternalSecret/PushSecret).
+          - name: api-secretmanager
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: secretmanager.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-secretmanager"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
           # Tenant SA, least-privilege (Cloud SQL client only for now).
           - name: tenant-sa
             base:
@@ -231,6 +255,40 @@ spec:
                   string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
                 toFieldPath: spec.forProvider.member
 
+          # Lets ESO's PushSecret (below) write the tenant's API key into
+          # Secret Manager, authenticated via the tenant SA's existing WI
+          # binding (no new identity needed).
+          - name: tenant-sa-secretmanager-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/secretmanager.admin
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-secretmanager-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
           # Operator read access to the tenant project, so humans can see and
           # inspect tenant resources (projects Crossplane creates are otherwise
           # invisible to any identity not granted a role on them).
@@ -277,6 +335,35 @@ spec:
                 transforms:
                   - type: string
                     string: {type: Format, fmt: "t0-u-%s-operator-cloudsql-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Operator read access to the real Secret Manager payload, same
+          # reason as operator-viewer/operator-cloudsql-admin above: projects
+          # Crossplane creates are invisible to any identity not explicitly
+          # granted a role on them, and secretAccessor is separate from the
+          # broader roles/viewer (which only sees secret metadata, not values).
+          - name: operator-secretmanager-accessor
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/secretmanager.secretAccessor
+                  member: "${TENANT0_OPERATOR_MEMBER}"
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-operator-secretmanager-accessor"}
               - type: FromCompositeFieldPath
                 fromFieldPath: spec.tenantName
                 toFieldPath: spec.forProvider.project
@@ -742,21 +829,41 @@ spec:
                       fallbackTo: Value
                       fallbackValue: 256Mi
 
-          # Per-tenant API key, placeholder Secret (see header note).
-          - name: api-key-secret
+          # Per-tenant API key, real Secret Manager value via External
+          # Secrets Operator (ESO). SecretStore authenticates to the
+          # tenant's own GCP project via the tenant SA's existing Workload
+          # Identity binding (u-workload KSA, same one used elsewhere in
+          # this Composition) - no new identity. Password generator
+          # referenced via dataFrom.sourceRef.generatorRef re-generates a
+          # BRAND NEW value on every single reconcile (confirmed live - no
+          # GeneratorState gets created for this usage pattern, despite that
+          # CRD existing). ExternalSecret's refreshPolicy: CreatedOnce is
+          # what actually makes the value stable: create once, never touch
+          # again, ignoring ESO's default 1h refresh entirely. Without that
+          # field this whole design silently rotates the tenant's API key
+          # on every ESO resync. ExternalSecret materializes the one-time
+          # value into the K8s Secret tenant-api-key. PushSecret reads that
+          # SAME K8s Secret (not the generator directly - a
+          # second generator reference would produce a different value)
+          # and writes it into Secret Manager.
+          - name: api-key-secretstore
             base:
               apiVersion: kubernetes.crossplane.io/v1alpha2
               kind: Object
               spec:
                 forProvider:
                   manifest:
-                    apiVersion: v1
-                    kind: Secret
+                    apiVersion: external-secrets.io/v1
+                    kind: SecretStore
                     metadata:
-                      name: tenant-api-key
-                    type: Opaque
-                    stringData:
-                      api-key: PLACEHOLDER-replace-with-Secret-Manager-minted-key
+                      name: tenant-api-key-store
+                    spec:
+                      provider:
+                        gcpsm:
+                          auth:
+                            workloadIdentity:
+                              serviceAccountRef:
+                                name: u-workload
                 providerConfigRef:
                   name: default
                 managementPolicies: ["*"]
@@ -766,7 +873,126 @@ spec:
                 toFieldPath: metadata.name
                 transforms:
                   - type: string
-                    string: {type: Format, fmt: "t0-u-%s-api-key"}
+                    string: {type: Format, fmt: "t0-u-%s-api-key-store"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.provider.gcpsm.projectID
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: api-key-password
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: generators.external-secrets.io/v1alpha1
+                    kind: Password
+                    metadata:
+                      name: tenant-api-key-password
+                    spec:
+                      length: 32
+                      digits: 8
+                      symbols: 0
+                      noUpper: false
+                      allowRepeat: true
+                      secretKeys: ["api-key"]
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-password"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: api-key-external-secret
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: external-secrets.io/v1
+                    kind: ExternalSecret
+                    metadata:
+                      name: tenant-api-key
+                    spec:
+                      refreshPolicy: CreatedOnce
+                      target:
+                        name: tenant-api-key
+                      dataFrom:
+                        - sourceRef:
+                            generatorRef:
+                              apiVersion: generators.external-secrets.io/v1alpha1
+                              kind: Password
+                              name: tenant-api-key-password
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-external-secret"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: api-key-push-secret
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: external-secrets.io/v1alpha1
+                    kind: PushSecret
+                    metadata:
+                      name: tenant-api-key-push
+                    spec:
+                      secretStoreRefs:
+                        - name: tenant-api-key-store
+                          kind: SecretStore
+                      selector:
+                        secret:
+                          name: tenant-api-key
+                      data:
+                        - match:
+                            secretKey: api-key
+                            remoteRef:
+                              remoteKey: tenant-api-key
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-push-secret"}
               - type: FromCompositeFieldPath
                 fromFieldPath: spec.tenantName
                 toFieldPath: spec.forProvider.manifest.metadata.namespace
