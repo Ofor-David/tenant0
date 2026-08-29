@@ -3,12 +3,13 @@
 Crossplane XRDs and Compositions for tenant stamp-out (Phase 2). This directory holds only the
 reusable schema and recipe, two sibling directories cover the rest:
 - `universe-claims/`, the actual per-tenant requests
-- `universe-engine/`, the Crossplane install itself, the control plane that reconciles this
-  directory's recipes against `universe-claims/`'s requests
+- `universe-engine/`, the Crossplane install itself (the control plane that reconciles this
+  directory's recipes against `universe-claims/`'s requests) plus External Secrets Operator
 
 - `xrd.yaml`, the schema a `Tenant` XR instance must satisfy (OpenAPI validation, first-line admission control)
-- `composition.yaml`, the recipe: project, tenant SA, KMS key, Cloud SQL + PSC, GKE namespace,
-  NetworkPolicy, Workload Identity, per-tenant Redis, per-tenant API key
+- `composition.yaml`, the recipe: project, tenant SA, KMS key, Cloud SQL + PSC + pgvector, GKE
+  namespace, NetworkPolicy, Workload Identity, per-tenant Redis, per-tenant API key (real GCP
+  Secret Manager value synced in via External Secrets Operator)
 
 ## Why this is split across three directories
 
