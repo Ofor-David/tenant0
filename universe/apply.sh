@@ -14,4 +14,5 @@ set -a
 source .env
 set +a
 
-envsubst < composition.yaml | kubectl apply -f -
+envsubst '$TENANT0_FOLDER_ID $TENANT0_BILLING_ACCOUNT_ID $TENANT0_HOST_NETWORK_PROJECT_NUMBER $TENANT0_OPERATOR_MEMBER' \
+  < composition.yaml | kubectl apply -f -

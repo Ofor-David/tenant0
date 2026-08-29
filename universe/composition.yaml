@@ -5,8 +5,7 @@
 # medium=db-custom-2-7680/512Mi/4cpu-4Gi, large=db-custom-4-15360/1Gi/8cpu-8Gi.
 # Only small is exercised by tenant-a/tenant-b.
 #
-# Known gaps: pgvector needs a manual `CREATE EXTENSION vector;` after
-# connecting. API key is a placeholder Secret, not real Secret Manager yet.
+# Known gaps: API key is a placeholder Secret, not real Secret Manager yet.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -180,6 +179,43 @@ spec:
                 transforms:
                   - type: string
                     string: {type: Format, fmt: "t0-u-%s-sa-cloudsql-client"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
+          # Lets the pgvector migration Job (below) look up the instance's
+          # live PSC IP via the Cloud SQL Admin API at run time (instead of
+          # depending on a Crossplane-patched IP that may not exist yet), and
+          # create its own IAM database user (with cloudsqlsuperuser)
+          # directly via that same API (the Crossplane User resource panics
+          # this provider on create for CLOUD_IAM_SERVICE_ACCOUNT users).
+          - name: tenant-sa-cloudsql-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudsql.admin
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-cloudsql-admin"}
               - type: FromCompositeFieldPath
                 fromFieldPath: spec.tenantName
                 toFieldPath: spec.forProvider.project
@@ -557,6 +593,99 @@ spec:
                 transforms:
                   - type: string
                     string: {type: Format, fmt: "serviceAccount:t0-host-network.svc.id.goog[u-%s/u-workload]"}
+
+          # One-shot Job that enables pgvector on the tenant's Cloud SQL
+          # instance. Runs as the tenant KSA (Workload Identity -> tenant
+          # GSA), fetches its own IAM token from the metadata server, looks
+          # up the instance's current PSC IP via the Cloud SQL Admin API
+          # (rather than trusting a Crossplane-patched IP that may not exist
+          # yet at render time), creates/grants its own IAM database user via
+          # that same API (the Crossplane User resource panics this provider
+          # on create for CLOUD_IAM_SERVICE_ACCOUNT users, worked around
+          # entirely here), then runs CREATE EXTENSION over psql using that
+          # IAM token as the password. Every step is idempotent/retry-safe;
+          # backoffLimit absorbs the eventual-consistency gap between
+          # creating the DB user and it being usable.
+          #
+          # Caveat (confirmed by deleting the real Cloud SQL instance and
+          # watching the reconcile): if this Job's underlying K8s Job is
+          # deleted out of band, provider-kubernetes does NOT self-heal it
+          # until its next poll cycle, unlike the GCP-backed resources
+          # above, which the provider re-creates immediately. A manual
+          # reconcile-nudge on this Object is needed to force it sooner.
+          - name: pgvector-migration
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: batch/v1
+                    kind: Job
+                    metadata:
+                      name: pgvector-migration
+                    spec:
+                      backoffLimit: 6
+                      template:
+                        spec:
+                          restartPolicy: Never
+                          serviceAccountName: u-workload
+                          containers:
+                            - name: pgvector-migration
+                              image: postgres:18
+                              resources:
+                                requests: {cpu: 100m, memory: 128Mi}
+                              command: ["/bin/sh", "-c"]
+                              args:
+                                - |
+                                  set -e
+                                  apt-get update -qq && apt-get install -y -qq curl jq >/dev/null
+                                  TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | jq -r .access_token)
+                                  curl -sf -H "Authorization: Bearer $TOKEN" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE" -o /tmp/describe.json
+                                  IP=$(jq -r '.settings.ipConfiguration.pscConfig.pscAutoConnections[0].ipAddress' /tmp/describe.json)
+                                  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"name\":\"$DB_USER\",\"type\":\"CLOUD_IAM_SERVICE_ACCOUNT\",\"databaseRoles\":[\"cloudsqlsuperuser\"]}" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE/users" >/dev/null
+                                  sleep 10
+                                  PGPASSWORD="$TOKEN" psql "host=$IP port=5432 sslmode=require dbname=postgres user=$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+                              env:
+                                - {name: GCP_PROJECT, value: PLACEHOLDER}
+                                - {name: GCP_INSTANCE, value: PLACEHOLDER}
+                                - {name: DB_USER, value: PLACEHOLDER}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-pgvector-migration"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[0].value
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[1].value
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-db"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "t0-u-%s-sa@t0-u-%s.iam"}
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[2].value
 
           # Per-tenant Redis, sized by tier.
           - name: redis
