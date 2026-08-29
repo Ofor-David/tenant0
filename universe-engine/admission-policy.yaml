@@ -1,0 +1,53 @@
+# Restricts who can provision/deprovision tenants and who can change the
+# rules every tenant is provisioned by. xrd.yaml already documents Tenant
+# XRs as "cluster-scoped... an administrative action, not tenant
+# self-service", but nothing enforced that: anyone with kubectl access to
+# this cluster could create/delete a Tenant XR, or edit composition.yaml/
+# xrd.yaml directly on the live cluster, bypassing the git-reviewed
+# pipeline entirely. This closes that gap natively (ValidatingAdmissionPolicy,
+# GA since Kubernetes 1.30, no extra operator/dependency).
+#
+# Deliberately NOT gated: UPDATE on Tenant XRs (Crossplane's own controller
+# writes status fields like status.projectId via ToCompositeFieldPath
+# patches on every reconcile; gating UPDATE would need a narrower CEL
+# check scoped to spec-only changes, and sizeTier resizing is a legitimate
+# operator action anyway, not the risk this policy targets).
+#
+# Crossplane's own controller (ServiceAccount crossplane-system:crossplane)
+# IS exempted from the Composition/XRD UPDATE gate below - confirmed live
+# that it adds a real finalizer (defined.apiextensions.crossplane.io) to
+# the XRD as part of normal lifecycle management. Without this exemption
+# the policy would break Crossplane's own XRD establishment the moment
+# it's applied.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: tenant0-operator-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["universe.tenant0.io"]
+        apiVersions: ["v1alpha1"]
+        resources: ["tenants"]
+        operations: ["CREATE", "DELETE"]
+        scope: Cluster
+      - apiGroups: ["apiextensions.crossplane.io"]
+        apiVersions: ["v1"]
+        resources: ["compositions", "compositeresourcedefinitions"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        scope: Cluster
+  validations:
+    - expression: >-
+        request.userInfo.username == '${TENANT0_OPERATOR_EMAIL}' ||
+        request.userInfo.username == 'system:serviceaccount:crossplane-system:crossplane'
+      message: "only the Tenant0 operator may create/delete Tenant XRs or change the Composition/XRD that governs every tenant"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: tenant0-operator-only-binding
+spec:
+  policyName: tenant0-operator-only
+  validationActions: ["Deny"]
