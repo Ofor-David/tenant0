@@ -39,6 +39,12 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["secretstores", "externalsecrets", "pushsecrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["generators.external-secrets.io"]
+    resources: ["passwords"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
