@@ -163,6 +163,36 @@ spec:
                   - type: string
                     string: {type: Format, fmt: "t0-u-%s"}
 
+          # Service Usage API, needed by sqladmin-service-identity's direct
+          # call to serviceusage.googleapis.com's generateServiceIdentity
+          # endpoint (force-provisions Cloud SQL's P4SA, see that Job's own
+          # comment). Confirmed live this wasn't already implicitly enabled
+          # by any of the other ProjectServices - the call 403'd with
+          # SERVICE_DISABLED until this was added explicitly.
+          - name: api-serviceusage
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: serviceusage.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-serviceusage"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
           # Tenant SA, least-privilege (Cloud SQL client only for now).
           - name: tenant-sa
             base:
@@ -289,6 +319,42 @@ spec:
                   string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
                 toFieldPath: spec.forProvider.member
 
+          # Lets the sqladmin-service-identity Job (below) force-provision
+          # Cloud SQL's per-project service agent via the Service Usage API,
+          # instead of waiting on Crossplane's reconcile backoff to outlast
+          # the race against kms-key-cloudsql-iam (see that resource's own
+          # comment for the race itself).
+          - name: tenant-sa-serviceusage-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/serviceusage.serviceUsageAdmin
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-serviceusage-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
           # Operator read access to the tenant project, so humans can see and
           # inspect tenant resources (projects Crossplane creates are otherwise
           # invisible to any identity not granted a role on them).
@@ -393,6 +459,18 @@ spec:
 
           # Grant the tenant's per-project Cloud SQL service agent permission to use
           # the CMEK key, which lives in t0-security, not the tenant project.
+          #
+          # Race, worked around by sqladmin-service-identity below: this
+          # service agent doesn't exist on a brand-new project until Cloud
+          # SQL's own first-use flow lazily creates it, normally triggered
+          # by the cloudsql DatabaseInstance resource's own create call. If
+          # this grant's reconcile lands first, it 400s with "Service
+          # account ... does not exist" and depends entirely on Crossplane's
+          # retry backoff outlasting the race - observed NOT resolving
+          # within 15+ minutes on one tenant despite resolving in under a
+          # minute on others. sqladmin-service-identity force-provisions the
+          # same service agent explicitly instead of waiting on it as a side
+          # effect.
           - name: kms-key-cloudsql-iam
             base:
               apiVersion: kms.gcp.upbound.io/v1beta2
@@ -521,6 +599,19 @@ spec:
                   - type: string
                     string: {type: Format, fmt: "u-%s"}
 
+          # Egress to the GKE metadata server (169.254.169.254, a node-local
+          # address, not a pod) is required by every Workload-Identity-using
+          # workload in this namespace (pgvector-migration,
+          # sqladmin-service-identity below) - kubelet's own WI proxy
+          # intercepts calls to it and injects the pod's federated token.
+          # This was silently masked the entire time NetworkPolicy
+          # enforcement didn't actually work on this cluster (see
+          # kms-key-cloudsql-iam's comment on Dataplane V2); once
+          # enforcement started working for real, this default-deny policy
+          # broke WI for every pod here until this rule was added -
+          # confirmed live (curl to the metadata server timed out from
+          # inside a WI-restricted namespace, succeeded instantly from an
+          # unrestricted one).
           - name: network-policy
             base:
               apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -543,6 +634,48 @@ spec:
                           ports:
                             - {protocol: UDP, port: 53}
                             - {protocol: TCP, port: 53}
+                        - to:
+                            - ipBlock: {cidr: 169.254.169.254/32}
+                          ports:
+                            - {protocol: TCP, port: 80}
+                        # Google API access (sqladmin/serviceusage, called
+                        # directly by pgvector-migration and
+                        # sqladmin-service-identity). Tried scoping this to
+                        # the fixed private.googleapis.com range
+                        # (199.36.153.8/30) first, on the assumption that
+                        # this subnet's Private Google Access setting routes
+                        # *.googleapis.com there - confirmed live via
+                        # `kubectl exec ... nslookup serviceusage.googleapis.com`
+                        # that it does NOT: without a private DNS zone
+                        # override for googleapis.com, it resolves to normal
+                        # broad public Google IP ranges (172.217.x.x etc,
+                        # not one small block), and GKE's standard Dataplane
+                        # V2 doesn't expose Cilium's FQDN-based
+                        # CiliumNetworkPolicy CRD (GKE Enterprise only,
+                        # confirmed via `kubectl get crd | grep cilium` -
+                        # only internal-use CRDs present, no
+                        # ciliumnetworkpolicies.cilium.io). Deliberate
+                        # tradeoff: allow all egress on 443 rather than
+                        # enumerate Google's published IP ranges (large,
+                        # changes over time) or take on a GKE Enterprise
+                        # upgrade. The actual isolation goal - no direct
+                        # pod-to-pod cross-tenant traffic, no non-HTTPS
+                        # egress - stays fully enforced by the ingress rule
+                        # and this policy's own default-deny baseline.
+                        - to: []
+                          ports:
+                            - {protocol: TCP, port: 443}
+                        # Cloud SQL PSC endpoint. Each tenant's PSC IP is
+                        # dynamically assigned within this dedicated subnet
+                        # (t0-hyperverse-psc-us-central1, confirmed via
+                        # `gcloud compute networks subnets list`), not a
+                        # fixed per-tenant address, so the whole subnet is
+                        # allowed rather than one IP. Needed by
+                        # pgvector-migration's psql connection.
+                        - to:
+                            - ipBlock: {cidr: 10.40.0.0/24}
+                          ports:
+                            - {protocol: TCP, port: 5432}
                 providerConfigRef:
                   name: default
                 managementPolicies: ["*"]
@@ -680,6 +813,66 @@ spec:
                 transforms:
                   - type: string
                     string: {type: Format, fmt: "serviceAccount:t0-host-network.svc.id.goog[u-%s/u-workload]"}
+
+          # One-shot Job that force-provisions Cloud SQL's per-project
+          # service agent via the Service Usage API's generateServiceIdentity
+          # call (the same call gcloud beta services identity create wraps),
+          # instead of waiting for Cloud SQL's own instance-create flow to
+          # trigger it as a side effect - see kms-key-cloudsql-iam's comment
+          # above for the race this closes. Idempotent: calling this on an
+          # already-provisioned service agent just returns the existing one.
+          - name: sqladmin-service-identity
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: batch/v1
+                    kind: Job
+                    metadata:
+                      name: sqladmin-service-identity
+                    spec:
+                      backoffLimit: 6
+                      template:
+                        spec:
+                          restartPolicy: Never
+                          serviceAccountName: u-workload
+                          containers:
+                            - name: sqladmin-service-identity
+                              image: curlimages/curl:8.11.0
+                              resources:
+                                requests: {cpu: 50m, memory: 32Mi}
+                              command: ["/bin/sh", "-c"]
+                              args:
+                                - |
+                                  set -e
+                                  TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+                                  curl -sf -X POST -H "Authorization: Bearer $TOKEN" "https://serviceusage.googleapis.com/v1beta1/projects/$GCP_PROJECT/services/sqladmin.googleapis.com:generateServiceIdentity"
+                              env:
+                                - {name: GCP_PROJECT, value: PLACEHOLDER}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sqladmin-service-identity"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[0].value
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
 
           # One-shot Job that enables pgvector on the tenant's Cloud SQL
           # instance. Runs as the tenant KSA (Workload Identity -> tenant
