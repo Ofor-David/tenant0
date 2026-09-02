@@ -84,6 +84,16 @@ resource "google_container_node_pool" "workloads" {
 
   node_config {
     machine_type = var.workloads_node_machine_type
+    # GKE's default (100GB) sized this pool to consume 200GB of the
+    # region's 250GB SSD_TOTAL_GB quota across just 2 nodes, blocking the
+    # autoscaler's 3rd-node scale-up with "GCE quota exceeded" - confirmed
+    # via `gcloud compute operations list ... targetLink~workloads`
+    # surfacing the real SSD_TOTAL_GB error (Kubernetes' own
+    # "Insufficient cpu" scheduling message was a red herring, the pool
+    # never actually ran out of CPU capacity). 30GB matches the crossplane
+    # pool's own explicit sizing and is plenty for these workloads (Redis,
+    # short-lived migration Jobs).
+    disk_size_gb = 30
 
     workload_metadata_config {
       mode = "GKE_METADATA"

@@ -659,12 +659,19 @@ spec:
                         # enumerate Google's published IP ranges (large,
                         # changes over time) or take on a GKE Enterprise
                         # upgrade. The actual isolation goal - no direct
-                        # pod-to-pod cross-tenant traffic, no non-HTTPS
+                        # pod-to-pod cross-tenant traffic, no non-HTTP(S)
                         # egress - stays fully enforced by the ingress rule
-                        # and this policy's own default-deny baseline.
+                        # and this policy's own default-deny baseline. Port
+                        # 80 alongside it for the same reason: confirmed
+                        # live that pgvector-migration's `apt-get install
+                        # curl jq` step needs plain-HTTP access to Debian's
+                        # package mirrors (deb.debian.org,
+                        # apt.postgresql.org), which the metadata-server-only
+                        # port 80 rule above doesn't cover.
                         - to: []
                           ports:
                             - {protocol: TCP, port: 443}
+                            - {protocol: TCP, port: 80}
                         # Cloud SQL PSC endpoint. Each tenant's PSC IP is
                         # dynamically assigned within this dedicated subnet
                         # (t0-hyperverse-psc-us-central1, confirmed via
