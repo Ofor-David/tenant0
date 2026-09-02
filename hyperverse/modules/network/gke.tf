@@ -28,6 +28,10 @@ resource "google_container_cluster" "hyperverse" {
     workload_pool = "${google_project.host_network.project_id}.svc.id.goog"
   }
 
+  # Dataplane V2 (Cilium-backed), required for NetworkPolicy enforcement.
+  # Immutable field: any change here forces full cluster replacement.
+  datapath_provider = "ADVANCED_DATAPATH"
+
   # Node pools are managed as separate resources below, GKE requires the
   # cluster to be created with a default pool that's then immediately
   # removed.
