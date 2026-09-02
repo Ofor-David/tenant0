@@ -890,9 +890,38 @@ spec:
           # that same API (the Crossplane User resource panics this provider
           # on create for CLOUD_IAM_SERVICE_ACCOUNT users, worked around
           # entirely here), then runs CREATE EXTENSION over psql using that
-          # IAM token as the password. Every step is idempotent/retry-safe;
-          # backoffLimit absorbs the eventual-consistency gap between
-          # creating the DB user and it being usable.
+          # IAM token as the password.
+          #
+          # In-script retry loop, not just Job-level backoffLimit: the
+          # instance reaching GCP API state RUNNABLE doesn't guarantee its
+          # PSC endpoint/IAM-auth path is immediately connectable - a real
+          # tenant hit exactly this, exhausting all 6 Job-level backoff
+          # attempts within the race window. Job-level retries recreate the
+          # whole pod (re-running apk/apt install every time, wasting most
+          # of each retry's time on package installation instead of
+          # actually waiting on the DB), so the fix is a bounded loop
+          # INSIDE the script around the real "is it ready" signal (the
+          # full describe -> create-user -> psql sequence), backed by
+          # backoffLimit only as an outer safety net that should now rarely
+          # if ever be needed. Switched off postgres:18 (Debian, apt-get)
+          # to postgres:18-alpine (apk) specifically to make package
+          # install fast enough that it's not worth avoiding per-attempt.
+          #
+          # Real bug caught on the first version of this loop (confirmed
+          # live on a real tenant, not assumed): CREATE USER is
+          # idempotent, so re-issuing it every attempt is safe, but doing
+          # so appears to reset a short IAM-auth-propagation window before
+          # psql against that user will actually authenticate - every
+          # attempt hit the exact same just-created-user unpropagated
+          # state and failed the same way, looping the full 10 attempts
+          # without ever letting propagation catch up (manually testing
+          # each step in isolation afterward "worked instantly" only
+          # because enough real time had passed since the Job's LAST
+          # create-user call). Fixed with an explicit `sleep 5` between
+          # create-user and psql within each attempt, restoring the
+          # buffer the original flat sleep 10 provided, while keeping the
+          # bounded-retry structure for the separate "instance not
+          # RUNNABLE/connectable yet" race this loop also covers.
           #
           # Caveat (confirmed by deleting the real Cloud SQL instance and
           # watching the reconcile): if this Job's underlying K8s Job is
@@ -919,20 +948,29 @@ spec:
                           serviceAccountName: u-workload
                           containers:
                             - name: pgvector-migration
-                              image: postgres:18
+                              image: postgres:18-alpine
                               resources:
                                 requests: {cpu: 100m, memory: 128Mi}
                               command: ["/bin/sh", "-c"]
                               args:
                                 - |
                                   set -e
-                                  apt-get update -qq && apt-get install -y -qq curl jq >/dev/null
-                                  TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | jq -r .access_token)
-                                  curl -sf -H "Authorization: Bearer $TOKEN" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE" -o /tmp/describe.json
-                                  IP=$(jq -r '.settings.ipConfiguration.pscConfig.pscAutoConnections[0].ipAddress' /tmp/describe.json)
-                                  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"name\":\"$DB_USER\",\"type\":\"CLOUD_IAM_SERVICE_ACCOUNT\",\"databaseRoles\":[\"cloudsqlsuperuser\"]}" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE/users" >/dev/null
-                                  sleep 10
-                                  PGPASSWORD="$TOKEN" psql "host=$IP port=5432 sslmode=require dbname=postgres user=$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+                                  apk add --no-cache curl jq >/dev/null
+                                  for i in $(seq 1 10); do
+                                    if TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | jq -r .access_token) \
+                                      && curl -sf -H "Authorization: Bearer $TOKEN" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE" -o /tmp/describe.json \
+                                      && IP=$(jq -r '.settings.ipConfiguration.pscConfig.pscAutoConnections[0].ipAddress' /tmp/describe.json) \
+                                      && curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"name\":\"$DB_USER\",\"type\":\"CLOUD_IAM_SERVICE_ACCOUNT\",\"databaseRoles\":[\"cloudsqlsuperuser\"]}" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE/users" >/dev/null; then
+                                      sleep 5
+                                      if PGPASSWORD="$TOKEN" psql "host=$IP port=5432 sslmode=require dbname=postgres user=$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;"; then
+                                        exit 0
+                                      fi
+                                    fi
+                                    echo "attempt $i not ready yet, retrying in 15s"
+                                    sleep 15
+                                  done
+                                  echo "gave up after 10 attempts (150s)"
+                                  exit 1
                               env:
                                 - {name: GCP_PROJECT, value: PLACEHOLDER}
                                 - {name: GCP_INSTANCE, value: PLACEHOLDER}
