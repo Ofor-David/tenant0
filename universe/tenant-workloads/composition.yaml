@@ -1,0 +1,71 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenantworkloads.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: TenantWorkloads
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-workloads-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          # Per-tenant Redis, sized by tier.
+          - name: redis
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: redis
+                    spec:
+                      replicas: 1
+                      selector:
+                        matchLabels: {app: redis}
+                      template:
+                        metadata:
+                          labels: {app: redis}
+                        spec:
+                          containers:
+                            - name: redis
+                              image: redis:7-alpine
+                              ports: [{containerPort: 6379}]
+                              resources:
+                                requests: {cpu: 100m}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-redis"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].resources.limits.memory
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: 256Mi}
+                        - {type: literal, literal: medium, result: 512Mi}
+                        - {type: literal, literal: large, result: 1Gi}
+                      fallbackTo: Value
+                      fallbackValue: 256Mi

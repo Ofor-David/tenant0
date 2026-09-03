@@ -9,9 +9,18 @@ reusable schema and recipe, two sibling directories cover the rest:
   Composition/XRD that governs every tenant
 
 - `xrd.yaml`, the schema a `Tenant` XR instance must satisfy (OpenAPI validation, first-line admission control)
-- `composition.yaml`, the recipe: project, tenant SA, KMS key, Cloud SQL + PSC + pgvector, GKE
-  namespace, NetworkPolicy, Workload Identity, per-tenant Redis, per-tenant API key (real GCP
-  Secret Manager value synced in via External Secrets Operator)
+- `composition.yaml`, a thin orchestrator composing 5 nested sub-XRs, one per domain (split out
+  once the recipe grew past ~1240 lines in one file):
+  - `tenant-project/`, GCP project + identity foundation (project, API enablement, tenant SA + IAM
+    grants, operator grants)
+  - `tenant-database/`, Cloud SQL + CMEK (KMS key, DatabaseInstance with PSC, pgvector migration)
+  - `tenant-network/`, GKE namespace, NetworkPolicy, ResourceQuota, Workload Identity plumbing
+  - `tenant-workloads/`, per-tenant application workloads (Redis; future home for the serving path)
+  - `tenant-secrets/`, per-tenant API key (real GCP Secret Manager value synced in via External
+    Secrets Operator)
+
+  Each sub-directory has its own `xrd.yaml`/`composition.yaml` pair, applied in dependency order
+  by `apply.sh` (children before the parent).
 
 ## Why this is split across three directories
 

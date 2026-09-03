@@ -1,0 +1,263 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenantnetworks.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: TenantNetwork
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-network-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: namespace
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: Namespace
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-namespace"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          # Egress to the GKE metadata server (169.254.169.254, a node-local
+          # address, not a pod) is required by every Workload-Identity-using
+          # workload in this namespace (pgvector-migration and
+          # sqladmin-service-identity, both in sibling sub-XRs) - kubelet's
+          # own WI proxy intercepts calls to it and injects the pod's
+          # federated token. This was silently masked the entire time
+          # NetworkPolicy enforcement didn't actually work on this cluster;
+          # once Dataplane V2 enabled real enforcement, this default-deny
+          # policy broke WI for every pod here until this rule was added -
+          # confirmed live (curl to the metadata server timed out from
+          # inside a WI-restricted namespace, succeeded instantly from an
+          # unrestricted one).
+          - name: network-policy
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: networking.k8s.io/v1
+                    kind: NetworkPolicy
+                    metadata:
+                      name: default-deny
+                    spec:
+                      podSelector: {}
+                      policyTypes: [Ingress, Egress]
+                      ingress:
+                        - from: [{podSelector: {}}]
+                      egress:
+                        - to: [{podSelector: {}}]
+                        - to: [] # allow DNS
+                          ports:
+                            - {protocol: UDP, port: 53}
+                            - {protocol: TCP, port: 53}
+                        - to:
+                            - ipBlock: {cidr: 169.254.169.254/32}
+                          ports:
+                            - {protocol: TCP, port: 80}
+                        # Google API access (sqladmin/serviceusage, called
+                        # directly by pgvector-migration and
+                        # sqladmin-service-identity). Tried scoping this to
+                        # the fixed private.googleapis.com range
+                        # (199.36.153.8/30) first, on the assumption that
+                        # this subnet's Private Google Access setting routes
+                        # *.googleapis.com there - confirmed live via
+                        # `kubectl exec ... nslookup serviceusage.googleapis.com`
+                        # that it does NOT: without a private DNS zone
+                        # override for googleapis.com, it resolves to normal
+                        # broad public Google IP ranges (172.217.x.x etc,
+                        # not one small block), and GKE's standard Dataplane
+                        # V2 doesn't expose Cilium's FQDN-based
+                        # CiliumNetworkPolicy CRD (GKE Enterprise only,
+                        # confirmed via `kubectl get crd | grep cilium` -
+                        # only internal-use CRDs present, no
+                        # ciliumnetworkpolicies.cilium.io). Deliberate
+                        # tradeoff: allow all egress on 443 rather than
+                        # enumerate Google's published IP ranges (large,
+                        # changes over time) or take on a GKE Enterprise
+                        # upgrade. The actual isolation goal - no direct
+                        # pod-to-pod cross-tenant traffic, no non-HTTP(S)
+                        # egress - stays fully enforced by the ingress rule
+                        # and this policy's own default-deny baseline. Port
+                        # 80 alongside it for the same reason: confirmed
+                        # live that pgvector-migration's `apt-get install
+                        # curl jq` step needs plain-HTTP access to Debian's
+                        # package mirrors (deb.debian.org,
+                        # apt.postgresql.org), which the metadata-server-only
+                        # port 80 rule above doesn't cover.
+                        - to: []
+                          ports:
+                            - {protocol: TCP, port: 443}
+                            - {protocol: TCP, port: 80}
+                        # Cloud SQL PSC endpoint. Each tenant's PSC IP is
+                        # dynamically assigned within this dedicated subnet
+                        # (t0-hyperverse-psc-us-central1, confirmed via
+                        # `gcloud compute networks subnets list`), not a
+                        # fixed per-tenant address, so the whole subnet is
+                        # allowed rather than one IP. Needed by
+                        # pgvector-migration's psql connection.
+                        - to:
+                            - ipBlock: {cidr: 10.40.0.0/24}
+                          ports:
+                            - {protocol: TCP, port: 5432}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-default-deny"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: resource-quota
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: ResourceQuota
+                    metadata:
+                      name: tenant-quota
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-quota"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.hard.cpu
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: "2"}
+                        - {type: literal, literal: medium, result: "4"}
+                        - {type: literal, literal: large, result: "8"}
+                      fallbackTo: Value
+                      fallbackValue: "2"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.hard.memory
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: 2Gi}
+                        - {type: literal, literal: medium, result: 4Gi}
+                        - {type: literal, literal: large, result: 8Gi}
+                      fallbackTo: Value
+                      fallbackValue: 2Gi
+
+          # Workload Identity: namespace-scoped KSA <-> tenant GCP SA.
+          - name: tenant-ksa
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: ServiceAccount
+                    metadata:
+                      name: u-workload
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-ksa"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.manifest.metadata.annotations[iam.gke.io/gcp-service-account]
+
+          - name: tenant-wi-binding
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ServiceAccountIAMMember
+              spec:
+                forProvider:
+                  role: roles/iam.workloadIdentityUser
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-wi-binding"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "projects/t0-u-%s/serviceAccounts/t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.serviceAccountId
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.member
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "serviceAccount:t0-host-network.svc.id.goog[u-%s/u-workload]"}

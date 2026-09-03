@@ -1,0 +1,491 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenantprojects.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: TenantProject
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-project-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: project
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: Project
+              spec:
+                forProvider:
+                  folderId: "${TENANT0_FOLDER_ID}"
+                  billingAccount: "${TENANT0_BILLING_ACCOUNT_ID}"
+                  deletionPolicy: DELETE
+                deletionPolicy: Delete
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.projectId
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.projectId
+                toFieldPath: status.projectId
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.number
+                toFieldPath: status.projectNumber
+
+          - name: api-networkconnectivity
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: networkconnectivity.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-networkconnectivity"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: api-sqladmin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: sqladmin.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-sqladmin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: api-logging
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: logging.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-logging"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: api-secretmanager
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: secretmanager.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-secretmanager"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Needed by sqladmin-service-identity below's direct call to
+          # serviceusage.googleapis.com's generateServiceIdentity endpoint.
+          # Confirmed live this wasn't already implicitly enabled by any of
+          # the other ProjectServices - the call 403'd with SERVICE_DISABLED
+          # until this was added explicitly.
+          - name: api-serviceusage
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ProjectService
+              spec:
+                forProvider:
+                  service: serviceusage.googleapis.com
+                  disableOnDestroy: false
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-serviceusage"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Tenant SA, least-privilege (Cloud SQL client only for now).
+          - name: tenant-sa
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+              kind: ServiceAccount
+              spec:
+                forProvider:
+                  displayName: Tenant workload identity
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: tenant-sa-iam
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudsql.client
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-cloudsql-client"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
+          # Lets the pgvector migration Job (in TenantDatabase) look up the
+          # instance's live PSC IP via the Cloud SQL Admin API at run time,
+          # and create its own IAM database user directly via that same API
+          # (the Crossplane User resource panics this provider on create for
+          # CLOUD_IAM_SERVICE_ACCOUNT users).
+          - name: tenant-sa-cloudsql-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudsql.admin
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-cloudsql-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
+          # Lets ESO's PushSecret (in TenantSecrets) write the tenant's API
+          # key into Secret Manager, authenticated via the tenant SA's
+          # existing WI binding (no new identity needed).
+          - name: tenant-sa-secretmanager-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/secretmanager.admin
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-secretmanager-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
+          # Lets sqladmin-service-identity below force-provision Cloud SQL's
+          # per-project service agent via the Service Usage API, instead of
+          # waiting on Crossplane's reconcile backoff to outlast the race
+          # against TenantDatabase's kms-key-cloudsql-iam grant.
+          - name: tenant-sa-serviceusage-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/serviceusage.serviceUsageAdmin
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sa-serviceusage-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "serviceAccount:t0-u-%s-sa@t0-u-%s.iam.gserviceaccount.com"}
+                toFieldPath: spec.forProvider.member
+
+          # Operator read access to the tenant project, so humans can see and
+          # inspect tenant resources (projects Crossplane creates are
+          # otherwise invisible to any identity not granted a role on them).
+          - name: operator-viewer
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/viewer
+                  member: "${TENANT0_OPERATOR_MEMBER}"
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-operator-viewer"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Operator Cloud SQL admin on the tenant project, so humans can
+          # inspect DB operation logs and manage instances directly.
+          - name: operator-cloudsql-admin
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudsql.admin
+                  member: "${TENANT0_OPERATOR_MEMBER}"
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-operator-cloudsql-admin"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # Operator read access to the real Secret Manager payload -
+          # secretAccessor is separate from the broader roles/viewer (which
+          # only sees secret metadata, not values).
+          - name: operator-secretmanager-accessor
+            base:
+              apiVersion: cloudplatform.gcp.upbound.io/v1beta2
+              kind: ProjectIAMMember
+              spec:
+                forProvider:
+                  role: roles/secretmanager.secretAccessor
+                  member: "${TENANT0_OPERATOR_MEMBER}"
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-operator-secretmanager-accessor"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          # One-shot Job that force-provisions Cloud SQL's per-project
+          # service agent via the Service Usage API's generateServiceIdentity
+          # call, instead of waiting for Cloud SQL's own instance-create flow
+          # to trigger it as a side effect - closes the race TenantDatabase's
+          # kms-key-cloudsql-iam grant would otherwise lose. Idempotent.
+          #
+          # Lives here, not in TenantDatabase, because it's IAM/identity
+          # plumbing (force-provisioning a GCP service agent via the Service
+          # Usage API), the same domain as every other grant above, even
+          # though the agent it provisions is Cloud SQL's. Soft cross-XR
+          # dependency: this Job runs in namespace u-<tenant>, which
+          # TenantNetwork (a sibling sub-XR) creates, not this one. No hard
+          # ordering exists between sibling composed XRs, so on a cold
+          # provision this Job's create attempt can 404 on a not-yet-created
+          # namespace before TenantNetwork catches up - it just retries on
+          # the next reconcile (now 1m, see universe-engine/runtimeconfig.yaml)
+          # until the namespace exists, same tolerance-of-races pattern this
+          # project already relies on elsewhere (e.g. kms-key-cloudsql-iam
+          # racing the P4SA this very Job force-provisions).
+          - name: sqladmin-service-identity
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: batch/v1
+                    kind: Job
+                    metadata:
+                      name: sqladmin-service-identity
+                    spec:
+                      backoffLimit: 6
+                      template:
+                        spec:
+                          restartPolicy: Never
+                          serviceAccountName: u-workload
+                          containers:
+                            - name: sqladmin-service-identity
+                              image: curlimages/curl:8.11.0
+                              resources:
+                                requests: {cpu: 50m, memory: 32Mi}
+                              command: ["/bin/sh", "-c"]
+                              args:
+                                - |
+                                  set -e
+                                  TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+                                  curl -sf -X POST -H "Authorization: Bearer $TOKEN" "https://serviceusage.googleapis.com/v1beta1/projects/$GCP_PROJECT/services/sqladmin.googleapis.com:generateServiceIdentity"
+                              env:
+                                - {name: GCP_PROJECT, value: PLACEHOLDER}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-sqladmin-service-identity"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[0].value
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}

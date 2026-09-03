@@ -1,0 +1,187 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenantsecrets.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: TenantSecrets
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-secrets-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          # Per-tenant API key, real Secret Manager value via External
+          # Secrets Operator (ESO). SecretStore authenticates to the
+          # tenant's own GCP project via the tenant SA's existing Workload
+          # Identity binding (u-workload KSA, created by sibling sub-XR
+          # TenantNetwork) - no new identity. Password generator referenced
+          # via dataFrom.sourceRef.generatorRef re-generates a BRAND NEW
+          # value on every single reconcile (confirmed live - no
+          # GeneratorState gets created for this usage pattern, despite that
+          # CRD existing). ExternalSecret's refreshPolicy: CreatedOnce is
+          # what actually makes the value stable: create once, never touch
+          # again, ignoring ESO's default 1h refresh entirely. Without that
+          # field this whole design silently rotates the tenant's API key
+          # on every ESO resync. ExternalSecret materializes the one-time
+          # value into the K8s Secret tenant-api-key. PushSecret reads that
+          # SAME K8s Secret (not the generator directly - a second
+          # generator reference would produce a different value) and writes
+          # it into Secret Manager.
+          - name: api-key-secretstore
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: external-secrets.io/v1
+                    kind: SecretStore
+                    metadata:
+                      name: tenant-api-key-store
+                    spec:
+                      provider:
+                        gcpsm:
+                          auth:
+                            workloadIdentity:
+                              serviceAccountRef:
+                                name: u-workload
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-store"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.provider.gcpsm.projectID
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+
+          - name: api-key-password
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: generators.external-secrets.io/v1alpha1
+                    kind: Password
+                    metadata:
+                      name: tenant-api-key-password
+                    spec:
+                      length: 32
+                      digits: 8
+                      symbols: 0
+                      noUpper: false
+                      allowRepeat: true
+                      secretKeys: ["api-key"]
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-password"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: api-key-external-secret
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: external-secrets.io/v1
+                    kind: ExternalSecret
+                    metadata:
+                      name: tenant-api-key
+                    spec:
+                      refreshPolicy: CreatedOnce
+                      target:
+                        name: tenant-api-key
+                      dataFrom:
+                        - sourceRef:
+                            generatorRef:
+                              apiVersion: generators.external-secrets.io/v1alpha1
+                              kind: Password
+                              name: tenant-api-key-password
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-external-secret"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: api-key-push-secret
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: external-secrets.io/v1alpha1
+                    kind: PushSecret
+                    metadata:
+                      name: tenant-api-key-push
+                    spec:
+                      secretStoreRefs:
+                        - name: tenant-api-key-store
+                          kind: SecretStore
+                      selector:
+                        secret:
+                          name: tenant-api-key
+                      data:
+                        - match:
+                            secretKey: api-key
+                            remoteRef:
+                              remoteKey: tenant-api-key
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-api-key-push-secret"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}

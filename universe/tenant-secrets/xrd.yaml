@@ -1,0 +1,33 @@
+# TenantSecrets schema — per-tenant API key materialized via External
+# Secrets Operator into GCP Secret Manager. Composed by the top-level
+# Tenant Composition (../composition.yaml), never created directly by an
+# operator (see universe-engine/admission-policy.yaml, which gates this the
+# same way it gates Tenant itself).
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: tenantsecrets.universe.tenant0.io
+spec:
+  group: universe.tenant0.io
+  names:
+    kind: TenantSecrets
+    plural: tenantsecrets
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                tenantName:
+                  type: string
+                  pattern: '^[a-z][a-z0-9-]{1,28}[a-z0-9]$'
+              required:
+                - tenantName
+          required:
+            - spec
