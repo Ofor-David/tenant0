@@ -11,7 +11,7 @@ code (OpenTofu + policy-as-code + Crossplane), not console clicks.
 
 | Path | What |
 |---|---|
-| `hyperverse/` | OpenTofu for the non-tenant infra: `security`, `cicd`, `network` projects, each its own module |
+| `hyperverse/` | OpenTofu for the non-tenant infra: `security`, `network` projects, each its own module |
 | `universe/` | Crossplane XRDs and Compositions for tenant stamp-out |
 | `universe-claims/` | Per-tenant `Tenant` XR instances of the `universe/` XRD (Crossplane v2 has no separate Claim kind) |
 | `universe-engine/` | Helmfile install of Crossplane (the control plane that reconciles `universe/` against `universe-claims/`) and External Secrets Operator (syncs the per-tenant API key into real GCP Secret Manager) |

@@ -1,6 +1,11 @@
 # t0-security project: KMS keyring (ring only; per-tenant keys are created by
 # Crossplane in Phase 2, see universe/), Cloud Audit Log sink to BigQuery,
-# Security Command Center.
+# Security Command Center, and the Artifact Registry for the TEI image
+# (Phase 3) - folded in from a dropped standalone t0-cicd project, which held
+# nothing but this one repo and wasn't worth its own project/billing line at
+# this scale. The CI pipeline itself (GitHub Actions workflow running
+# `tofu plan` + `conftest test` against policy/) lives in .github/workflows/,
+# not here; Terraform only provisions the registry the pipeline pushes to.
 
 resource "google_project" "security" {
   name            = "t0-security"
@@ -17,6 +22,8 @@ locals {
     "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "securitycenter.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com",
   ]
 }
 
@@ -69,3 +76,13 @@ resource "google_bigquery_dataset_iam_member" "audit_sink_writer" {
 # not consistently supported via Terraform for org onboarding, this is a
 # documented manual step (console or `gcloud scc` at org level), same
 # category as the t0x-mgmt-state bootstrap exception.
+
+resource "google_artifact_registry_repository" "tenant0" {
+  project       = google_project.security.project_id
+  location      = var.region
+  repository_id = "tenant0"
+  format        = "DOCKER"
+  description   = "TEI embedding-service images"
+
+  depends_on = [google_project_service.security_apis]
+}
