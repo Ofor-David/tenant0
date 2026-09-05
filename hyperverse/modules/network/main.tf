@@ -84,6 +84,23 @@ resource "google_compute_subnetwork" "psc_endpoints" {
   ip_cidr_range = "10.40.0.0/24"
 }
 
+# Required by gke-l7-regional-external-managed (exec plan §8.3's edge
+# Gateway) - confirmed live: the Gateway controller's SYNC failed with
+# "An active proxy-only subnetwork is required in the same region and VPC
+# as the forwarding rule" until this existed. Google reserves this range
+# for the regional external ALB's own Envoy proxies, not tenant traffic -
+# only one ACTIVE proxy-only subnet is allowed per region per VPC, and
+# /26 (64 addresses) is Google's stated minimum.
+resource "google_compute_subnetwork" "proxy_only" {
+  project       = google_project.host_network.project_id
+  name          = "t0-hyperverse-proxy-only-us-central1"
+  region        = var.region
+  network       = google_compute_network.hyperverse.id
+  ip_cidr_range = "10.41.0.0/26"
+  purpose       = "REGIONAL_MANAGED_PROXY"
+  role          = "ACTIVE"
+}
+
 # Authorizes Cloud SQL to auto-create PSC endpoints in this VPC. Without it,
 # a tenant instance's pscAutoConnections status sits at NONE forever. Host-
 # level singleton: one policy covers every current and future tenant.

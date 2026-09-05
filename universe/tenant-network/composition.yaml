@@ -69,6 +69,17 @@ spec:
                       policyTypes: [Ingress, Egress]
                       ingress:
                         - from: [{podSelector: {}}]
+                        # edge-router (ns-platform, exec plan §8.3) proxies
+                        # to this namespace's TEI service after resolving
+                        # the caller's API key to this tenant. Port 80 only
+                        # - the shared edge has no reason to reach anything
+                        # else in here (Redis, Cloud SQL PSC).
+                        - from:
+                            - namespaceSelector:
+                                matchLabels:
+                                  kubernetes.io/metadata.name: ns-platform
+                          ports:
+                            - {protocol: TCP, port: 80}
                       egress:
                         - to: [{podSelector: {}}]
                         - to: [] # allow DNS
@@ -269,3 +280,46 @@ spec:
                 transforms:
                   - type: string
                     string: {type: Format, fmt: "serviceAccount:t0-host-network.svc.id.goog[u-%s/u-workload]"}
+
+          # Grants edge-router (ns-platform, exec plan §8.3) get access to
+          # ONLY this tenant's tenant-api-key Secret. The ClusterRole it
+          # references (edge-router-secret-reader, hyperverse/platform) is
+          # itself a template with no cluster-wide effect - binding it via a
+          # namespace-scoped RoleBinding here is what scopes the actual
+          # grant to this one namespace, same blast-radius argument as
+          # everything else in this sub-XR.
+          - name: edge-router-secret-reader-binding
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: rbac.authorization.k8s.io/v1
+                    kind: RoleBinding
+                    metadata:
+                      name: edge-router-secret-reader
+                    subjects:
+                      - kind: ServiceAccount
+                        name: edge-router
+                        namespace: ns-platform
+                    roleRef:
+                      kind: ClusterRole
+                      name: edge-router-secret-reader
+                      apiGroup: rbac.authorization.k8s.io
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-edge-router-secret-reader-binding"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}

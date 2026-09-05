@@ -32,6 +32,13 @@ resource "google_container_cluster" "hyperverse" {
   # Immutable field: any change here forces full cluster replacement.
   datapath_provider = "ADVANCED_DATAPATH"
 
+  # GKE-managed Gateway API controller, needed for exec plan §8.3 (per-tenant
+  # API-key routing at the edge). STANDARD channel tracks the stable Gateway
+  # API CRD set; not immutable, safe to enable on the existing cluster.
+  gateway_api_config {
+    channel = "CHANNEL_STANDARD"
+  }
+
   # Private nodes: no external IP per node. Confirmed live this was
   # necessary, not just nice-to-have - the region's IN_USE_ADDRESSES quota
   # (4) was exactly maxed by the 4 nodes this cluster already ran, blocking

@@ -1,0 +1,317 @@
+# Shared serving-path edge (exec plan §8.3, design §5.3a). Singleton,
+# not per-tenant, so it lives here as plain kubectl-applied manifests rather
+# than a Crossplane Composition in universe/ - matches the "hyperverse
+# implementation, not universe" call for the Gateway API groundwork.
+#
+# GKE's managed Gateway (backed by Google's Application Load Balancer
+# product) has no ext-authz hook - Cloud Armor and IAP are the only native
+# auth integrations, and neither fits a per-tenant opaque API key. Rather
+# than stand up a second Gateway controller (e.g. Envoy Gateway) just for
+# one ext-authz filter, edge-router does the key->tenant resolution and the
+# proxying itself; the Gateway/HTTPRoute below just gets every request to it.
+#
+# gke-l7-regional-external-managed chosen over the global variant: this
+# project is pinned to us-central1 only (execution plan ground rule "no
+# multi-region anything"), so the global class's anycast frontend buys
+# nothing but extra cost.
+#
+# ponytail: HTTP listener only, no TLS - this demo has no registered domain
+# to validate a Google-managed cert against, and the whole project tears
+# down after proof capture. The API key therefore transits in cleartext.
+# Upgrade path: buy/point a domain at the Gateway's IP, add a
+# frontendConfig + Google-managed ManagedCertificate, add an HTTPS listener.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-platform
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: edge-router
+  namespace: ns-platform
+
+---
+# Cluster-scoped resource (Namespace), so this has to be a ClusterRole -
+# list-only, no data access, just enough to discover u-* namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-namespace-lister
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: edge-router-namespace-lister
+subjects:
+  - kind: ServiceAccount
+    name: edge-router
+    namespace: ns-platform
+roleRef:
+  kind: ClusterRole
+  name: platform-namespace-lister
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Template only - a ClusterRole grants nothing on its own. Bound per-tenant
+# via a namespace-scoped RoleBinding (see tenant-network/composition.yaml),
+# so each binding only ever grants get on the ONE tenant-api-key secret in
+# ONE tenant's namespace, not cluster-wide secret access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: edge-router-secret-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["tenant-api-key"]
+    verbs: ["get"]
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edge-router-script
+  namespace: ns-platform
+data:
+  edge_router.py: |
+    import base64
+    import http.server
+    import json
+    import re
+    import ssl
+    import threading
+    import time
+    import urllib.error
+    import urllib.request
+
+    API_SERVER = "https://kubernetes.default.svc"
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    REFRESH_SECONDS = 30
+    PATH_RE = re.compile(r"^/t/([a-z0-9-]+)(/.*)?$")
+
+    _lock = threading.Lock()
+    _key_to_tenant = {}
+
+    def _k8s_get(path):
+        with open(TOKEN_PATH) as f:
+            token = f.read().strip()
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        req = urllib.request.Request(
+            API_SERVER + path, headers={"Authorization": f"Bearer {token}"}
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    def _refresh():
+        mapping = {}
+        namespaces = _k8s_get("/api/v1/namespaces")
+        for ns in namespaces.get("items", []):
+            name = ns["metadata"]["name"]
+            if not name.startswith("u-"):
+                continue
+            tenant = name[len("u-"):]
+            try:
+                secret = _k8s_get(f"/api/v1/namespaces/{name}/secrets/tenant-api-key")
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    continue
+                raise
+            b64_key = secret.get("data", {}).get("api-key")
+            if not b64_key:
+                continue
+            mapping[base64.b64decode(b64_key).decode()] = tenant
+        global _key_to_tenant
+        with _lock:
+            _key_to_tenant = mapping
+
+    def _refresh_loop():
+        while True:
+            try:
+                _refresh()
+            except Exception as e:
+                print(f"refresh failed: {e}", flush=True)
+            time.sleep(REFRESH_SECONDS)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _handle(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.end_headers()
+                return
+
+            match = PATH_RE.match(self.path)
+            if not match:
+                self.send_response(404)
+                self.end_headers()
+                return
+            tenant, rest = match.group(1), (match.group(2) or "/")
+
+            api_key = self.headers.get("X-API-Key")
+            if not api_key:
+                self.send_response(401)
+                self.end_headers()
+                return
+
+            with _lock:
+                key_tenant = _key_to_tenant.get(api_key)
+
+            if key_tenant is None:
+                self.send_response(401)
+                self.end_headers()
+                return
+            if key_tenant != tenant:
+                # Key is real, but for a different tenant than the path
+                # targets - the exact cross-tenant rejection design §5.3a
+                # calls for.
+                self.send_response(403)
+                self.end_headers()
+                return
+
+            body_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(body_len) if body_len else None
+            upstream = f"http://tei.u-{tenant}.svc.cluster.local{rest}"
+            req = urllib.request.Request(upstream, data=body, method=self.command)
+            if self.headers.get("Content-Type"):
+                req.add_header("Content-Type", self.headers.get("Content-Type"))
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    self.send_response(resp.status)
+                    for h, v in resp.getheaders():
+                        if h.lower() not in ("transfer-encoding", "connection"):
+                            self.send_header(h, v)
+                    self.end_headers()
+                    self.wfile.write(resp.read())
+            except urllib.error.HTTPError as e:
+                self.send_response(e.code)
+                self.end_headers()
+                self.wfile.write(e.read())
+            except Exception:
+                self.send_response(502)
+                self.end_headers()
+
+        do_GET = _handle
+        do_POST = _handle
+        do_PUT = _handle
+
+        def log_message(self, fmt, *args):
+            print(f"{self.address_string()} - {fmt % args}", flush=True)
+
+    if __name__ == "__main__":
+        try:
+            # Best-effort warm cache before serving. A cold start can race
+            # CoreDNS/apiserver readiness right after node scale-up -
+            # confirmed live (crashed on first boot with a DNS
+            # resolution error). The background loop below retries
+            # regardless, so a failure here just means an empty cache for
+            # up to REFRESH_SECONDS rather than a crash.
+            _refresh()
+        except Exception as e:
+            print(f"initial refresh failed: {e}", flush=True)
+        threading.Thread(target=_refresh_loop, daemon=True).start()
+        http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-router
+  namespace: ns-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: edge-router}
+  template:
+    metadata:
+      labels: {app: edge-router}
+    spec:
+      serviceAccountName: edge-router
+      containers:
+        - name: edge-router
+          image: python:3.12-alpine
+          command: ["python3", "/app/edge_router.py"]
+          ports: [{containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /health, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          volumeMounts:
+            - name: script
+              mountPath: /app
+      volumes:
+        - name: script
+          configMap:
+            name: edge-router-script
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-router
+  namespace: ns-platform
+spec:
+  selector: {app: edge-router}
+  ports: [{port: 80, targetPort: 8080}]
+
+---
+# GCLB's default health check probes "/" - confirmed live it marked both
+# backends UNHEALTHY since this app only returns 200 on /health (matching
+# the container's own readinessProbe, which GCLB does NOT read
+# automatically). This CR is what actually points GCLB's check at the
+# right path.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: edge-router-health-check
+  namespace: ns-platform
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: edge-router
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 8080
+        requestPath: /health
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: t0-gateway
+  namespace: ns-platform
+spec:
+  gatewayClassName: gke-l7-regional-external-managed
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: t0-route
+  namespace: ns-platform
+spec:
+  parentRefs:
+    - name: t0-gateway
+  rules:
+    - backendRefs:
+        - name: edge-router
+          port: 80
