@@ -70,16 +70,22 @@ spec:
                       ingress:
                         - from: [{podSelector: {}}]
                         # edge-router (ns-platform, exec plan §8.3) proxies
-                        # to this namespace's TEI service after resolving
-                        # the caller's API key to this tenant. Port 80 only
-                        # - the shared edge has no reason to reach anything
-                        # else in here (Redis, Cloud SQL PSC).
+                        # to this namespace's tei Service after resolving
+                        # the caller's API key to this tenant. Port 8000, not
+                        # 80 - confirmed live that NetworkPolicy ports match
+                        # the pod's real containerPort, not the Service's
+                        # port; tei-service's targetPort is 8000 (the app
+                        # container, exec plan §8.4), so a rule for 80 here
+                        # silently dropped everything with no error on
+                        # either side. No other port needed - the shared
+                        # edge has no reason to reach anything else in here
+                        # (Redis, Cloud SQL PSC).
                         - from:
                             - namespaceSelector:
                                 matchLabels:
                                   kubernetes.io/metadata.name: ns-platform
                           ports:
-                            - {protocol: TCP, port: 80}
+                            - {protocol: TCP, port: 8000}
                       egress:
                         - to: [{podSelector: {}}]
                         - to: [] # allow DNS

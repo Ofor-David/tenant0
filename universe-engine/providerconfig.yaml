@@ -33,8 +33,9 @@ rules:
   # validation never needed the Service object (pod-to-PSC is direct), so
   # this gap went unnoticed until edge-router's DNS-based routing to it
   # (§8.3) actually required it to be real.
+  # "configmaps" added for app-script (tenant-workloads, exec plan §8.4).
   - apiGroups: [""]
-    resources: ["namespaces", "resourcequotas", "secrets", "serviceaccounts", "services"]
+    resources: ["namespaces", "resourcequotas", "secrets", "serviceaccounts", "services", "configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
