@@ -116,6 +116,9 @@ spec:
               - type: FromCompositeFieldPath
                 fromFieldPath: spec.sizeTier
                 toFieldPath: spec.sizeTier
+              - type: FromCompositeFieldPath
+                fromFieldPath: status.cloudSqlConnectionName
+                toFieldPath: spec.cloudSqlConnectionName
 
           - name: tenant-secrets
             base:

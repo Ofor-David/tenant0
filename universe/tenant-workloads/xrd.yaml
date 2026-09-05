@@ -30,8 +30,15 @@ spec:
                 sizeTier:
                   type: string
                   enum: [small, medium, large]
+                # Relayed from TenantDatabase's status via the parent
+                # Tenant XR's own status - the Cloud SQL Auth Proxy sidecar
+                # (see composition.yaml's tei Deployment) needs this to
+                # connect over PSC with IAM auth, no stored password.
+                cloudSqlConnectionName:
+                  type: string
               required:
                 - tenantName
                 - sizeTier
+                - cloudSqlConnectionName
           required:
             - spec

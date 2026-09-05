@@ -69,3 +69,121 @@ spec:
                         - {type: literal, literal: large, result: 1Gi}
                       fallbackTo: Value
                       fallbackValue: 256Mi
+
+          # TEI (Text Embeddings Inference) embedding service, per exec plan
+          # §8.1/§8.2 - image built and pushed by serving/tei/Dockerfile,
+          # model weights baked in at build time (see that file's comment).
+          # Runs as the tenant KSA (u-workload, Workload Identity -> tenant
+          # GSA, created by sibling sub-XR TenantNetwork) so the Auth Proxy
+          # sidecar below can authenticate to Cloud SQL as that tenant's own
+          # identity - no stored password (design doc §5.2c).
+          #
+          # cloud-sql-proxy sidecar: connects over PSC (--psc) with
+          # automatic IAM DB authentication (--auto-iam-authn), listening on
+          # 127.0.0.1:5432 inside the pod network namespace. The app layer
+          # built in a later step (§8.4's end-to-end wiring) talks to
+          # Postgres at that local address exactly like a normal local DB,
+          # the proxy handles the IAM token exchange and PSC connection
+          # transparently.
+          - name: tei
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: tei
+                    spec:
+                      replicas: 1
+                      selector:
+                        matchLabels: {app: tei}
+                      template:
+                        metadata:
+                          labels: {app: tei}
+                        spec:
+                          serviceAccountName: u-workload
+                          containers:
+                            - name: tei
+                              image: us-central1-docker.pkg.dev/t0-security/tenant0/tei:sentence-transformers-all-minilm-l6-v2
+                              ports: [{containerPort: 80}]
+                              readinessProbe:
+                                httpGet: {path: /health, port: 80}
+                              livenessProbe:
+                                httpGet: {path: /health, port: 80}
+                              resources:
+                                requests: {cpu: 250m, memory: 512Mi}
+                                limits: {cpu: PLACEHOLDER, memory: 1Gi}
+                            - name: cloud-sql-proxy
+                              image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.2
+                              args:
+                                - --auto-iam-authn
+                                - --psc
+                                - PLACEHOLDER
+                              resources:
+                                requests: {cpu: 50m, memory: 64Mi}
+                                limits: {cpu: 100m, memory: 128Mi}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-tei"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].resources.limits.cpu
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: "1"}
+                        - {type: literal, literal: medium, result: "2"}
+                        - {type: literal, literal: large, result: "4"}
+                      fallbackTo: Value
+                      fallbackValue: "1"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cloudSqlConnectionName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[1].args[2]
+
+          - name: tei-service
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: tei
+                    spec:
+                      selector: {app: tei}
+                      ports: [{port: 80, targetPort: 80}]
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-tei-service"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
