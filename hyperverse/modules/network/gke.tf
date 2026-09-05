@@ -32,6 +32,21 @@ resource "google_container_cluster" "hyperverse" {
   # Immutable field: any change here forces full cluster replacement.
   datapath_provider = "ADVANCED_DATAPATH"
 
+  # Private nodes: no external IP per node. Confirmed live this was
+  # necessary, not just nice-to-have - the region's IN_USE_ADDRESSES quota
+  # (4) was exactly maxed by the 4 nodes this cluster already ran, blocking
+  # any further autoscaling. Also the correct baseline posture for a
+  # project themed around isolation. enable_private_endpoint stays false so
+  # kubectl from this operator's machine keeps working against the public
+  # control-plane endpoint. Nodes now reach the internet via Cloud NAT
+  # (nat.tf) instead of a per-node public IP; another immutable field,
+  # same full-rebuild category as datapath_provider above.
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    master_ipv4_cidr_block  = "172.16.0.0/28"
+  }
+
   # Node pools are managed as separate resources below, GKE requires the
   # cluster to be created with a default pool that's then immediately
   # removed.
@@ -99,4 +114,18 @@ resource "google_container_node_pool" "workloads" {
       mode = "GKE_METADATA"
     }
   }
+}
+
+# Node pool has no explicit service_account set, so it runs as this
+# project's default Compute Engine SA. That identity needs read access to
+# the Artifact Registry in t0-security (the TEI image, see
+# serving/tei/Dockerfile) - confirmed live via ImagePullBackOff/403 on a
+# tenant-workloads TEI pod, same cross-project-grant pattern as
+# crossplane_provider.tf's KMS keyring grant.
+resource "google_artifact_registry_repository_iam_member" "workloads_node_artifactregistry_reader" {
+  project    = "t0-security"
+  location   = var.region
+  repository = "tenant0"
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_project.host_network.number}-compute@developer.gserviceaccount.com"
 }

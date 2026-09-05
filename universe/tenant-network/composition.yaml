@@ -118,12 +118,20 @@ spec:
                         # (t0-hyperverse-psc-us-central1, confirmed via
                         # `gcloud compute networks subnets list`), not a
                         # fixed per-tenant address, so the whole subnet is
-                        # allowed rather than one IP. Needed by
-                        # pgvector-migration's psql connection.
+                        # allowed rather than one IP. Port 5432 needed by
+                        # pgvector-migration's direct psql connection. Port
+                        # 3307 needed by cloud-sql-proxy's sidecar (see
+                        # tenant-workloads/composition.yaml) - confirmed
+                        # live that the proxy's local 5432 listener (what
+                        # its own clients connect to) is separate from its
+                        # actual upstream mTLS channel to the Cloud SQL
+                        # backend, which uses 3307 and was timing out
+                        # ("i/o timeout") until this was added.
                         - to:
                             - ipBlock: {cidr: 10.40.0.0/24}
                           ports:
                             - {protocol: TCP, port: 5432}
+                            - {protocol: TCP, port: 3307}
                 providerConfigRef:
                   name: default
                 managementPolicies: ["*"]

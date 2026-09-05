@@ -78,6 +78,9 @@ spec:
               - type: ToCompositeFieldPath
                 fromFieldPath: status.cloudSqlPscIpAddress
                 toFieldPath: status.cloudSqlPscIpAddress
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.cloudSqlPscDnsName
+                toFieldPath: status.cloudSqlPscDnsName
 
           - name: tenant-network
             base:

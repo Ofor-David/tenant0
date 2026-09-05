@@ -96,6 +96,17 @@ spec:
                       ipv4Enabled: false
                       pscConfig:
                         - pscEnabled: true
+                          # Lets cloud-sql-proxy's --psc mode (see
+                          # tenant-workloads/composition.yaml's tei
+                          # Deployment) resolve this instance's PSC DNS
+                          # name - confirmed live that without this, the
+                          # proxy fails with "no such host" on the
+                          # *.sql.goog name it correctly derives from the
+                          # connection name, because nothing provisions
+                          # that DNS record otherwise. Requires
+                          # dns.googleapis.com enabled on t0-host-network
+                          # (see hyperverse/modules/network/main.tf).
+                          pscAutoDnsEnabled: true
                           allowedConsumerProjects: ["${TENANT0_HOST_NETWORK_PROJECT_NUMBER}"]
                           pscAutoConnections:
                             - consumerNetwork: projects/t0-host-network/global/networks/t0-hyperverse-vpc
@@ -152,6 +163,9 @@ spec:
               - type: ToCompositeFieldPath
                 fromFieldPath: status.atProvider.settings.ipConfiguration.pscConfig[0].pscAutoConnections[0].ipAddress
                 toFieldPath: status.cloudSqlPscIpAddress
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.dnsNames[1].name
+                toFieldPath: status.cloudSqlPscDnsName
 
           # One-shot Job that enables pgvector on the tenant's Cloud SQL
           # instance. Runs as the tenant KSA (Workload Identity -> tenant

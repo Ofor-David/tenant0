@@ -20,6 +20,12 @@ locals {
     "cloudkms.googleapis.com",
     "networkconnectivity.googleapis.com",
     "serviceusage.googleapis.com",
+    # Required for Cloud SQL PSC DNS automation (pscAutoDnsEnabled, see
+    # universe/tenant-database/composition.yaml) - confirmed live that
+    # cloud-sql-proxy's --psc mode needs to resolve a *.sql.goog DNS name
+    # for the PSC endpoint, which Cloud SQL only auto-provisions in this
+    # consumer VPC once this API is enabled here.
+    "dns.googleapis.com",
   ]
 }
 
@@ -51,6 +57,11 @@ resource "google_compute_subnetwork" "hyperverse_us_central1" {
   region        = var.region
   network       = google_compute_network.hyperverse.id
   ip_cidr_range = "10.10.0.0/20"
+
+  # Nodes have no external IP (gke.tf's private_cluster_config) - this lets
+  # them reach *.googleapis.com (Artifact Registry, Cloud SQL Admin API,
+  # etc.) without routing through Cloud NAT.
+  private_ip_google_access = true
 
   secondary_ip_range {
     range_name    = "gke-pods"

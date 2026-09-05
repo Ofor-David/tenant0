@@ -85,6 +85,20 @@ spec:
           # Postgres at that local address exactly like a normal local DB,
           # the proxy handles the IAM token exchange and PSC connection
           # transparently.
+          #
+          # Requires cloud-sql-proxy 2.18.2+ (see the image tag below):
+          # confirmed live that 2.14.2's --psc derives a stale
+          # sql.goog-suffixed name that Cloud SQL's DNS automation
+          # (pscAutoDnsEnabled, see ../tenant-database/composition.yaml)
+          # never provisions - the real auto-created record uses a
+          # sql-psc.goog suffix instead. Tried passing that correct DNS
+          # name directly as a workaround; that's actually a different,
+          # unrelated feature requiring a manually-published TXT record
+          # (the "custom DNS name" flow), not what DNS automation
+          # provisions (a bare A record) - confirmed live via "unable to
+          # resolve TXT record" once the proxy accepted the DNS-shaped
+          # argument. --psc with a fixed proxy version is the correct,
+          # standard mechanism.
           - name: tei
             base:
               apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -117,7 +131,20 @@ spec:
                                 requests: {cpu: 250m, memory: 512Mi}
                                 limits: {cpu: PLACEHOLDER, memory: 1Gi}
                             - name: cloud-sql-proxy
-                              image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.2
+                              # 2.25.4: confirmed (deep research, see
+                              # commit history/PRs) that cloud-sql-proxy
+                              # only learned to resolve
+                              # pscAutoDnsEnabled's sql-psc.goog-suffixed
+                              # automation record starting in 2.24.0
+                              # (2026-07-24) via cloud-sql-go-connector
+                              # v1.23.0, with a further fix in v1.25.2
+                              # (2026-08-27) for prioritizing the
+                              # automation record when both a legacy
+                              # sql.goog and sql-psc.goog name are present.
+                              # Every version tried before this
+                              # (2.14.2, 2.21.0) predates both fixes and
+                              # reads the stale sql.goog-only field.
+                              image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
                               args:
                                 - --auto-iam-authn
                                 - --psc

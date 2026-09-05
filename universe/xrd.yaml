@@ -45,5 +45,7 @@ spec:
                   type: string
                 cloudSqlPscIpAddress:
                   type: string
+                cloudSqlPscDnsName:
+                  type: string
           required:
             - spec
