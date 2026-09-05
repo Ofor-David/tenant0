@@ -1,6 +1,6 @@
 # policy
 
-OPA / Conftest policies enforced in CI against `hyperverse/` (the spine).
+OPA / Conftest policies enforced in CI against `hyperverse/`.
 
 Minimum set for Phase 0:
 - no public storage buckets
@@ -8,4 +8,3 @@ Minimum set for Phase 0:
 - no `roles/owner` in IAM bindings
 
 Each policy maps to a control in the compliance matrix (see `docs/`).
-a

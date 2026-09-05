@@ -2,6 +2,16 @@
 # `crossplane` node pool, sets the reconcile interval, and creates the
 # fixed-name KSA that Workload Identity binds to a real GCP SA (GCP-side
 # half in hyperverse/modules/network/crossplane_provider.tf).
+#
+# --poll=1h meant a resource whose create attempt failed on a resolved
+# dependency (e.g. DatabaseInstance racing the Cloud SQL P4SA/KMS grant,
+# see composition.yaml's kms-key-cloudsql-iam comment) wouldn't naturally
+# retry for up to an hour - every tenant provisioned this session needed
+# a manual `kubectl annotate ... reconcile-nudge` on DatabaseInstance
+# because of exactly this, confirmed by checking this file after the
+# pattern recurred on 4 separate tenants. 1m still means each of ~15
+# GCP-backed resources per tenant only issues one describe/list call a
+# minute when idle - cheap at this project's scale.
 apiVersion: pkg.crossplane.io/v1beta1
 kind: DeploymentRuntimeConfig
 metadata:
@@ -27,7 +37,7 @@ spec:
           containers:
             - name: package-runtime
               args:
-                - --poll=1h
+                - --poll=1m
   serviceAccountTemplate:
     metadata:
       name: gcp-provider

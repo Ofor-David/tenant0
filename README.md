@@ -3,8 +3,9 @@
 A GRC-aware, low-latency multi-tenant AI serving platform on GCP, built to the minimum bar that
 survives a real enterprise security review, on a near-free-tier budget.
 
-The core thesis: tenant isolation at the GCP **project** boundary, provisioned and enforced entirely
-through code (OpenTofu + policy-as-code + Crossplane), not console clicks.
+The core thesis: tenant isolation at the GCP **project** boundary and the Kubernetes **network**
+boundary (NetworkPolicy enforced via GKE Dataplane V2), provisioned and enforced entirely through
+code (OpenTofu + policy-as-code + Crossplane), not console clicks.
 
 ## Repo layout
 
