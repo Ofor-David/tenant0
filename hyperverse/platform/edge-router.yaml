@@ -216,6 +216,12 @@ data:
         except Exception as e:
             print(f"initial refresh failed: {e}", flush=True)
         threading.Thread(target=_refresh_loop, daemon=True).start()
+        # Default TCP accept backlog is 5 - confirmed live via k6 that under
+        # a burst of 100+ concurrent connections, new connections queued at
+        # the OS accept level long enough to blow past a 30s client timeout,
+        # showing up as 502s even though the app behind this never errored
+        # (it never got the connection in time to even try).
+        http.server.ThreadingHTTPServer.request_queue_size = 128
         http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 
 ---
@@ -243,8 +249,11 @@ spec:
           livenessProbe:
             httpGet: {path: /health, port: 8080}
           resources:
+            # 1000m limit, same reasoning/evidence as app's own resources
+            # comment (tenant-workloads/composition.yaml) - k6 showed this
+            # tier throttling badly under real load despite spare node CPU.
             requests: {cpu: 100m, memory: 128Mi}
-            limits: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: 1000m, memory: 256Mi}
           volumeMounts:
             - name: script
               mountPath: /app
