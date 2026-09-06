@@ -29,7 +29,12 @@ spec:
     resourceRules:
       - apiGroups: ["universe.tenant0.io"]
         apiVersions: ["v1alpha1"]
-        resources: ["tenants"]
+        # tenants: the operator-facing kind. tenantprojects/tenantdatabases/
+        # tenantnetworks/tenantworkloads/tenantsecrets: the 5 nested sub-XRs
+        # a Tenant composes (see ../universe/composition.yaml) - only
+        # Crossplane's own controller should ever create/delete these, as
+        # part of reconciling a Tenant, never an operator directly.
+        resources: ["tenants", "tenantprojects", "tenantdatabases", "tenantnetworks", "tenantworkloads", "tenantsecrets"]
         operations: ["CREATE", "DELETE"]
         scope: Cluster
       - apiGroups: ["apiextensions.crossplane.io"]

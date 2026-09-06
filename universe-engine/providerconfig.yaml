@@ -27,8 +27,15 @@ kind: ClusterRole
 metadata:
   name: provider-kubernetes-tenant-resources
 rules:
+  # "services" added alongside this comment - confirmed live tei-service
+  # (tenant-workloads/composition.yaml, exec plan §8.2) has been silently
+  # stuck Unready since that commit: the pgvector-migration/cloud-sql-proxy
+  # validation never needed the Service object (pod-to-PSC is direct), so
+  # this gap went unnoticed until edge-router's DNS-based routing to it
+  # (§8.3) actually required it to be real.
+  # "configmaps" added for app-script (tenant-workloads, exec plan §8.4).
   - apiGroups: [""]
-    resources: ["namespaces", "resourcequotas", "secrets", "serviceaccounts"]
+    resources: ["namespaces", "resourcequotas", "secrets", "serviceaccounts", "services", "configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -44,6 +51,12 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["generators.external-secrets.io"]
     resources: ["passwords"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # tenant-network's edge-router-secret-reader-binding (exec plan §8.3) -
+  # confirmed live the provider couldn't even GET a RoleBinding it was
+  # trying to create until this was added.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

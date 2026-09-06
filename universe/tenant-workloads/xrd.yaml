@@ -1,0 +1,44 @@
+# TenantWorkloads schema — per-tenant application workloads (Redis today;
+# future home for Phase 3's TEI Deployment). Composed by the top-level
+# Tenant Composition (../composition.yaml), never created directly by an
+# operator (see universe-engine/admission-policy.yaml, which gates this the
+# same way it gates Tenant itself).
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: tenantworkloads.universe.tenant0.io
+spec:
+  group: universe.tenant0.io
+  names:
+    kind: TenantWorkloads
+    plural: tenantworkloads
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                tenantName:
+                  type: string
+                  pattern: '^[a-z][a-z0-9-]{1,28}[a-z0-9]$'
+                sizeTier:
+                  type: string
+                  enum: [small, medium, large]
+                # Relayed from TenantDatabase's status via the parent
+                # Tenant XR's own status - the Cloud SQL Auth Proxy sidecar
+                # (see composition.yaml's tei Deployment) needs this to
+                # connect over PSC with IAM auth, no stored password.
+                cloudSqlConnectionName:
+                  type: string
+              required:
+                - tenantName
+                - sizeTier
+                - cloudSqlConnectionName
+          required:
+            - spec

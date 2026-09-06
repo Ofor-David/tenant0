@@ -1,0 +1,573 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenantworkloads.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: TenantWorkloads
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-workloads-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          # Per-tenant Redis, sized by tier.
+          - name: redis
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: redis
+                    spec:
+                      replicas: 1
+                      selector:
+                        matchLabels: {app: redis}
+                      template:
+                        metadata:
+                          labels: {app: redis}
+                        spec:
+                          containers:
+                            - name: redis
+                              image: redis:7-alpine
+                              ports: [{containerPort: 6379}]
+                              resources:
+                                requests: {cpu: 100m}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-redis"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].resources.limits.memory
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - {type: literal, literal: small, result: 256Mi}
+                        - {type: literal, literal: medium, result: 512Mi}
+                        - {type: literal, literal: large, result: 1Gi}
+                      fallbackTo: Value
+                      fallbackValue: 256Mi
+
+          # Redis had no stable DNS name until now - confirmed live the app
+          # container's "redis" hostname lookup failed ("Name has no usable
+          # address") with only the Deployment above and no Service.
+          - name: redis-service
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: redis
+                    spec:
+                      selector: {app: redis}
+                      ports: [{port: 6379, targetPort: 6379}]
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-redis-service"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          # PgBouncer, transaction-pooling to cloud-sql-proxy's local
+          # 5432 listener. Confirmed live (k6 + Opus reasoning) that the
+          # app's per-request psql invocations were each paying a fresh
+          # TLS+IAM handshake to Cloud SQL - this pools already-established
+          # connections so a psql process reuses one instead. trust auth
+          # both sides: fully loopback, single-tenant-pod boundary, same
+          # trust model cloud-sql-proxy's own local listener already uses.
+          - name: pgbouncer-config
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: pgbouncer-config
+                    data:
+                      pgbouncer.ini: |
+                        [databases]
+                        postgres = host=127.0.0.1 port=5432 dbname=postgres
+
+                        [pgbouncer]
+                        listen_addr = 127.0.0.1
+                        listen_port = 6432
+                        auth_type = trust
+                        # trust still requires the connecting username to be
+                        # a KNOWN user - confirmed live ("no such user" ->
+                        # "trust authentication failed") that omitting
+                        # auth_file entirely rejects every user outright,
+                        # trust or not.
+                        auth_file = /etc/pgbouncer/userlist.txt
+                        pool_mode = transaction
+                        max_client_conn = 100
+                        default_pool_size = 20
+                        logfile = /tmp/pgbouncer.log
+                        pidfile = /tmp/pgbouncer.pid
+                      # Password value is irrelevant under auth_type=trust -
+                      # only presence in this file matters. PLACEHOLDER is
+                      # the tenant's own IAM DB user (same one cloud-sql-proxy
+                      # already authenticates as via --auto-iam-authn).
+                      userlist.txt: |
+                        "PLACEHOLDER" ""
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-pgbouncer-config"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "\"t0-u-%s-sa@t0-u-%s.iam\" \"\""}
+                toFieldPath: spec.forProvider.manifest.data[userlist.txt]
+
+          # TEI (Text Embeddings Inference) embedding service, per exec plan
+          # §8.1/§8.2 - image built and pushed by serving/tei/Dockerfile,
+          # model weights baked in at build time (see that file's comment).
+          # Runs as the tenant KSA (u-workload, Workload Identity -> tenant
+          # GSA, created by sibling sub-XR TenantNetwork) so the Auth Proxy
+          # sidecar below can authenticate to Cloud SQL as that tenant's own
+          # identity - no stored password (design doc §5.2c).
+          #
+          # cloud-sql-proxy sidecar: connects over PSC (--psc) with
+          # automatic IAM DB authentication (--auto-iam-authn), listening on
+          # 127.0.0.1:5432 inside the pod network namespace. The app layer
+          # built in a later step (§8.4's end-to-end wiring) talks to
+          # Postgres at that local address exactly like a normal local DB,
+          # the proxy handles the IAM token exchange and PSC connection
+          # transparently.
+          #
+          # Requires cloud-sql-proxy 2.18.2+ (see the image tag below):
+          # confirmed live that 2.14.2's --psc derives a stale
+          # sql.goog-suffixed name that Cloud SQL's DNS automation
+          # (pscAutoDnsEnabled, see ../tenant-database/composition.yaml)
+          # never provisions - the real auto-created record uses a
+          # sql-psc.goog suffix instead. Tried passing that correct DNS
+          # name directly as a workaround; that's actually a different,
+          # unrelated feature requiring a manually-published TXT record
+          # (the "custom DNS name" flow), not what DNS automation
+          # provisions (a bare A record) - confirmed live via "unable to
+          # resolve TXT record" once the proxy accepted the DNS-shaped
+          # argument. --psc with a fixed proxy version is the correct,
+          # standard mechanism.
+          # App-layer script (exec plan §8.4, design §5.3): cache-check ->
+          # embed-on-miss (localhost TEI) -> pgvector upsert+similarity
+          # query (localhost cloud-sql-proxy, same pod) -> cache-write. No
+          # new RBAC needed - unlike edge-router, this container only talks
+          # to loopback (TEI, the proxy) and the in-namespace redis
+          # Service, never the K8s API. psql/redis-cli via `-v`/:'var'
+          # binding, not manual string interpolation - psql's own
+          # SQL-quoting, not hand-rolled escaping that's one edge case from
+          # an injection bug.
+          - name: app-script
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: app-script
+                    data:
+                      serve.py: |
+                        import hashlib
+                        import http.server
+                        import json
+                        import os
+                        import subprocess
+                        import urllib.request
+
+                        TENANT = os.environ["TENANT_NAME"]
+                        # dbname=postgres, not "t0-u-<tenant>-db" - that
+                        # string is only the Cloud SQL *instance* name
+                        # (tenant-database/composition.yaml). No separate
+                        # database was ever created inside the instance;
+                        # pgvector-migration's own CREATE EXTENSION already
+                        # runs against dbname=postgres, confirmed live that
+                        # any other name 404s with "database does not exist".
+                        # Port 6432 (pgbouncer), not 5432 (cloud-sql-proxy
+                        # directly) - confirmed live each psql invocation was
+                        # paying a fresh TLS+IAM handshake per request;
+                        # pgbouncer pools already-established connections to
+                        # 5432 so a psql process reuses one instead.
+                        CONNINFO = f"host=127.0.0.1 port=6432 dbname=postgres user=t0-u-{TENANT}-sa@t0-u-{TENANT}.iam sslmode=disable"
+                        CACHE_TTL = "300"
+
+                        def _redis(*args):
+                            return subprocess.run(
+                                ["redis-cli", "-h", "redis", *args], capture_output=True, text=True
+                            ).stdout.strip()
+
+                        def _psql(sql, **binds):
+                            # :'var' substitution only fires for script/stdin
+                            # input, NOT for -c - confirmed live "-c" parses
+                            # the string as a single already-final query with
+                            # no variable interpolation pass, so binds were
+                            # silently no-ops and every :'var' was a syntax
+                            # error. Piping via stdin is what actually runs
+                            # it through psql's script parser.
+                            args = ["psql", CONNINFO, "-tA"]
+                            for k, v in binds.items():
+                                args += ["-v", f"{k}={v}"]
+                            result = subprocess.run(args, input=sql, capture_output=True, text=True)
+                            if result.returncode != 0:
+                                print(f"psql failed: {result.stderr}", flush=True)
+                            return result.stdout.strip()
+
+                        def _embed(text):
+                            req = urllib.request.Request(
+                                "http://127.0.0.1:80/embed",
+                                data=json.dumps({"inputs": text}).encode(),
+                                headers={"Content-Type": "application/json"},
+                            )
+                            with urllib.request.urlopen(req, timeout=30) as resp:
+                                return json.loads(resp.read())[0]
+
+                        class Handler(http.server.BaseHTTPRequestHandler):
+                            def do_GET(self):
+                                if self.path == "/health":
+                                    self.send_response(200)
+                                    self.end_headers()
+                                    return
+                                self.send_response(404)
+                                self.end_headers()
+
+                            def do_POST(self):
+                                if self.path != "/embed":
+                                    self.send_response(404)
+                                    self.end_headers()
+                                    return
+                                length = int(self.headers.get("Content-Length", 0))
+                                text = json.loads(self.rfile.read(length)).get("inputs", "")
+                                key = "emb:" + hashlib.sha256(text.encode()).hexdigest()
+
+                                cached = _redis("GET", key)
+                                if cached:
+                                    self._respond(200, {"embedding": json.loads(cached), "cache": "hit"})
+                                    return
+
+                                vector = _embed(text)
+                                vec_literal = "[" + ",".join(str(v) for v in vector) + "]"
+
+                                _psql(
+                                    "CREATE TABLE IF NOT EXISTS embeddings "
+                                    "(text TEXT PRIMARY KEY, embedding vector(384));"
+                                )
+                                _psql(
+                                    "INSERT INTO embeddings (text, embedding) VALUES (:'t', :'v') "
+                                    "ON CONFLICT (text) DO UPDATE SET embedding = EXCLUDED.embedding;",
+                                    t=text, v=vec_literal,
+                                )
+                                nearest = _psql(
+                                    "SELECT text FROM embeddings ORDER BY embedding <-> :'v' LIMIT 1;",
+                                    v=vec_literal,
+                                )
+
+                                _redis("SET", key, json.dumps(vector), "EX", CACHE_TTL)
+                                self._respond(
+                                    200,
+                                    {"embedding": vector, "cache": "miss", "nearest_match": nearest},
+                                )
+
+                            def _respond(self, code, payload):
+                                body = json.dumps(payload).encode()
+                                self.send_response(code)
+                                self.send_header("Content-Type", "application/json")
+                                self.send_header("Content-Length", str(len(body)))
+                                self.end_headers()
+                                self.wfile.write(body)
+
+                            def log_message(self, fmt, *args):
+                                print(f"{self.address_string()} - {fmt % args}", flush=True)
+
+                        if __name__ == "__main__":
+                            # Default TCP accept backlog is 5 - confirmed
+                            # live (edge-router's 502 count matched k6's
+                            # failed-check count exactly) that this, not
+                            # TEI or the DB, was the real remaining ceiling
+                            # under 100+ concurrent connections.
+                            http.server.ThreadingHTTPServer.request_queue_size = 128
+                            http.server.ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-app-script"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+
+          - name: tei
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: tei
+                    spec:
+                      # Stays 1 - confirmed live a 2nd replica can't
+                      # schedule, the workloads node pool is at its
+                      # Terraform-fixed max (4 nodes). Bumping that is a
+                      # bigger, slower change than the CPU-limit bump below;
+                      # not worth it under today's credit deadline.
+                      replicas: 1
+                      selector:
+                        matchLabels: {app: tei}
+                      template:
+                        metadata:
+                          labels: {app: tei}
+                        spec:
+                          serviceAccountName: u-workload
+                          volumes:
+                            - name: app-script
+                              configMap:
+                                name: app-script
+                            - name: pgbouncer-config
+                              configMap:
+                                name: pgbouncer-config
+                          containers:
+                            - name: tei
+                              image: us-central1-docker.pkg.dev/t0-security/tenant0/tei:sentence-transformers-all-minilm-l6-v2
+                              ports: [{containerPort: 80}]
+                              readinessProbe:
+                                httpGet: {path: /health, port: 80}
+                              livenessProbe:
+                                httpGet: {path: /health, port: 80}
+                              resources:
+                                requests: {cpu: 250m, memory: 512Mi}
+                                limits: {cpu: PLACEHOLDER, memory: 1Gi}
+                            - name: cloud-sql-proxy
+                              # 2.25.4: confirmed (deep research, see
+                              # commit history/PRs) that cloud-sql-proxy
+                              # only learned to resolve
+                              # pscAutoDnsEnabled's sql-psc.goog-suffixed
+                              # automation record starting in 2.24.0
+                              # (2026-07-24) via cloud-sql-go-connector
+                              # v1.23.0, with a further fix in v1.25.2
+                              # (2026-08-27) for prioritizing the
+                              # automation record when both a legacy
+                              # sql.goog and sql-psc.goog name are present.
+                              # Every version tried before this
+                              # (2.14.2, 2.21.0) predates both fixes and
+                              # reads the stale sql.goog-only field.
+                              image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
+                              args:
+                                - --auto-iam-authn
+                                - --psc
+                                - PLACEHOLDER
+                              resources:
+                                # Limit (not request) bumped - Opus reasoning
+                                # + k6 evidence (CPU bumps elsewhere did
+                                # nothing to cache-miss) points here: this
+                                # does a fresh TLS+IAM handshake per new
+                                # connection, and the app spawns 3 brand-new
+                                # psql connections per miss. Request stays
+                                # 50m - the workloads node pool is already
+                                # near its request-based scheduling ceiling
+                                # (confirmed live: bumping the request too
+                                # made this pod unschedulable anywhere).
+                                requests: {cpu: 50m, memory: 64Mi}
+                                limits: {cpu: 1000m, memory: 128Mi}
+                            - name: pgbouncer
+                              image: alpine:3.20
+                              command: ["sh", "-c"]
+                              args:
+                                # Confirmed live, two issues in sequence:
+                                # (1) mounting the ConfigMap straight at
+                                # /etc/pgbouncer collides with apk's own file
+                                # at that exact path during install - mount
+                                # elsewhere, copy in after apk finishes.
+                                # (2) pgbouncer refuses to run as root
+                                # ("PgBouncer should not run as root") -
+                                # confirmed live that su-exec alone wasn't
+                                # enough, the apk package apparently doesn't
+                                # create the "pgbouncer" system user outside
+                                # its (unused, standalone-container) OpenRC
+                                # service script - adduser explicitly instead
+                                # of assuming the package did it.
+                                - apk add --no-cache pgbouncer su-exec >/dev/null && (id pgbouncer >/dev/null 2>&1 || adduser -S -D -H -s /sbin/nologin pgbouncer) && cp /etc/pgbouncer-src/pgbouncer.ini /etc/pgbouncer-src/userlist.txt /etc/pgbouncer/ && chmod 644 /etc/pgbouncer/pgbouncer.ini /etc/pgbouncer/userlist.txt && su-exec pgbouncer pgbouncer /etc/pgbouncer/pgbouncer.ini
+                              resources:
+                                requests: {cpu: 50m, memory: 64Mi}
+                                limits: {cpu: 250m, memory: 128Mi}
+                              volumeMounts:
+                                - name: pgbouncer-config
+                                  mountPath: /etc/pgbouncer-src
+                            - name: app
+                              # Alpine has no psql/redis-cli preinstalled -
+                              # apk install at startup, same pattern
+                              # tenant-database's pgvector-migration Job
+                              # already uses for curl/jq. No pip packages:
+                              # orchestration is stdlib-only, DB/cache
+                              # access shells out to the CLIs.
+                              image: python:3.12-alpine
+                              command: ["sh", "-c"]
+                              args:
+                                - apk add --no-cache postgresql-client redis >/dev/null && python3 /app/serve.py
+                              env:
+                                - {name: TENANT_NAME, value: PLACEHOLDER}
+                              ports: [{containerPort: 8000}]
+                              readinessProbe:
+                                httpGet: {path: /health, port: 8000}
+                              livenessProbe:
+                                httpGet: {path: /health, port: 8000}
+                              resources:
+                                # confirmed live via k6: 250m limit throttled
+                                # this container into 10-30s p99s under load
+                                # despite node CPU sitting at ~20% - a
+                                # subprocess-per-request design (psql,
+                                # redis-cli) is bursty, not steady-state, and
+                                # needs burst headroom. Request stays modest
+                                # (no new scheduling pressure), limit raised
+                                # to use the real spare node capacity.
+                                requests: {cpu: 100m, memory: 128Mi}
+                                limits: {cpu: 1000m, memory: 256Mi}
+                              volumeMounts:
+                                - name: app-script
+                                  mountPath: /app
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-tei"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].resources.limits.cpu
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        # small bumped 1 -> 2: confirmed live via k6 that
+                        # cache-miss (real TEI inference) was CPU-throttled
+                        # even with node CPU at ~20% actual use. This is the
+                        # TEI CPU limit only, unrelated to tenant-database's
+                        # separate Cloud SQL tier mapping - no DB resize.
+                        - {type: literal, literal: small, result: "2"}
+                        - {type: literal, literal: medium, result: "2"}
+                        - {type: literal, literal: large, result: "4"}
+                      fallbackTo: Value
+                      fallbackValue: "2"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cloudSqlConnectionName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[1].args[2]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                # index 3, not 2 - pgbouncer was inserted before app,
+                # shifting every container index after cloud-sql-proxy by
+                # one. Confirmed live: this patch silently targeted
+                # pgbouncer's (nonexistent) env[0], producing an invalid
+                # Deployment ("env[0].name: Required value") that blocked
+                # every reconcile until fixed.
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[3].env[0].value
+
+          - name: tei-service
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: tei
+                    spec:
+                      selector: {app: tei}
+                      # Targets the app container (§8.4 orchestrator), not
+                      # TEI directly - TEI is now an internal-only sidecar
+                      # the app calls over localhost. Same Service name/DNS
+                      # (tei.u-<tenant>.svc.cluster.local) edge-router
+                      # already proxies to, so no edge-router change needed.
+                      ports: [{port: 80, targetPort: 8000}]
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-tei-service"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}

@@ -4,8 +4,7 @@
 # main.tf (this file)  module composition root
 # moved.tf             state-rename map from the pre-module flat layout
 #
-# modules/security/    t0-security project, KMS keyring, audit sink, SCC
-# modules/cicd/        t0-cicd project, Artifact Registry
+# modules/security/    t0-security project, KMS keyring, audit sink, SCC, Artifact Registry
 # modules/network/      t0-host-network, Shared VPC, GKE Standard + node pools (Phase 1)
 
 module "security" {
@@ -14,14 +13,6 @@ module "security" {
   folder_id          = google_folder.tenant0.folder_id
   billing_account_id = var.billing_account_id
   org_id             = var.org_id
-  region             = var.region
-}
-
-module "cicd" {
-  source = "./modules/cicd"
-
-  folder_id          = google_folder.tenant0.folder_id
-  billing_account_id = var.billing_account_id
   region             = var.region
 }
 

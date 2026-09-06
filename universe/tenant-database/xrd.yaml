@@ -1,14 +1,16 @@
-# Tenant schema. v2, no Claim kind — operators create the
-# Tenant XR directly (see universe-claims/). Cluster-scoped: an admin action.
+# TenantDatabase schema — Cloud SQL + CMEK for one tenant.
+# Composed by the top-level Tenant Composition (../composition.yaml), never
+# created directly by an operator (see universe-engine/admission-policy.yaml,
+# which gates this the same way it gates Tenant itself).
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
-  name: tenants.universe.tenant0.io
+  name: tenantdatabases.universe.tenant0.io
 spec:
   group: universe.tenant0.io
   names:
-    kind: Tenant
-    plural: tenants
+    kind: TenantDatabase
+    plural: tenantdatabases
   scope: Cluster
   versions:
     - name: v1alpha1
@@ -23,28 +25,29 @@ spec:
               properties:
                 tenantName:
                   type: string
-                  description: >-
-                    Unique tenant identifier. Used to derive the GCP project ID,
-                    GKE namespace, and other per-tenant resource names.
                   pattern: '^[a-z][a-z0-9-]{1,28}[a-z0-9]$'
                 sizeTier:
                   type: string
-                  description: Controls Cloud SQL machine tier and Redis sizing.
                   enum: [small, medium, large]
+                # Relayed from TenantProject's status via the parent Tenant
+                # XR's own status - not derivable from tenantName alone.
+                projectNumber:
+                  type: string
               required:
                 - tenantName
                 - sizeTier
+                - projectNumber
             status:
               type: object
               properties:
-                projectId:
-                  type: string
-                projectNumber:
-                  type: string
                 cloudSqlConnectionName:
                   type: string
                 cloudSqlPscIpAddress:
                   type: string
+                # The PSC-specific DNS name (sql-psc.goog suffix), distinct
+                # from status.atProvider.dnsName's legacy sql.goog suffix
+                # which cloud-sql-proxy cannot resolve - confirmed live
+                # (see tenant-workloads/composition.yaml's tei Deployment).
                 cloudSqlPscDnsName:
                   type: string
           required:

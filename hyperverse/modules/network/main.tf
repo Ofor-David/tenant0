@@ -20,6 +20,12 @@ locals {
     "cloudkms.googleapis.com",
     "networkconnectivity.googleapis.com",
     "serviceusage.googleapis.com",
+    # Required for Cloud SQL PSC DNS automation (pscAutoDnsEnabled, see
+    # universe/tenant-database/composition.yaml) - confirmed live that
+    # cloud-sql-proxy's --psc mode needs to resolve a *.sql.goog DNS name
+    # for the PSC endpoint, which Cloud SQL only auto-provisions in this
+    # consumer VPC once this API is enabled here.
+    "dns.googleapis.com",
   ]
 }
 
@@ -52,6 +58,11 @@ resource "google_compute_subnetwork" "hyperverse_us_central1" {
   network       = google_compute_network.hyperverse.id
   ip_cidr_range = "10.10.0.0/20"
 
+  # Nodes have no external IP (gke.tf's private_cluster_config) - this lets
+  # them reach *.googleapis.com (Artifact Registry, Cloud SQL Admin API,
+  # etc.) without routing through Cloud NAT.
+  private_ip_google_access = true
+
   secondary_ip_range {
     range_name    = "gke-pods"
     ip_cidr_range = "10.20.0.0/16"
@@ -71,6 +82,23 @@ resource "google_compute_subnetwork" "psc_endpoints" {
   region        = var.region
   network       = google_compute_network.hyperverse.id
   ip_cidr_range = "10.40.0.0/24"
+}
+
+# Required by gke-l7-regional-external-managed (exec plan §8.3's edge
+# Gateway) - confirmed live: the Gateway controller's SYNC failed with
+# "An active proxy-only subnetwork is required in the same region and VPC
+# as the forwarding rule" until this existed. Google reserves this range
+# for the regional external ALB's own Envoy proxies, not tenant traffic -
+# only one ACTIVE proxy-only subnet is allowed per region per VPC, and
+# /26 (64 addresses) is Google's stated minimum.
+resource "google_compute_subnetwork" "proxy_only" {
+  project       = google_project.host_network.project_id
+  name          = "t0-hyperverse-proxy-only-us-central1"
+  region        = var.region
+  network       = google_compute_network.hyperverse.id
+  ip_cidr_range = "10.41.0.0/26"
+  purpose       = "REGIONAL_MANAGED_PROXY"
+  role          = "ACTIVE"
 }
 
 # Authorizes Cloud SQL to auto-create PSC endpoints in this VPC. Without it,

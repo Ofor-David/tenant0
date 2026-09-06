@@ -1,0 +1,298 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenantdatabases.universe.tenant0.io
+spec:
+  compositeTypeRef:
+    apiVersion: universe.tenant0.io/v1alpha1
+    kind: TenantDatabase
+  mode: Pipeline
+  pipeline:
+    - step: compose-tenant-database-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          # KMS key in tenant0-keyring, CMEK source for Cloud SQL.
+          - name: kms-key
+            base:
+              apiVersion: kms.gcp.upbound.io/v1beta2
+              kind: CryptoKey
+              spec:
+                forProvider:
+                  keyRing: projects/t0-security/locations/us-central1/keyRings/tenant0-keyring
+                  purpose: ENCRYPT_DECRYPT
+                  rotationPeriod: 7776000s # 90 days
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-key"}
+
+          # Grant the tenant's per-project Cloud SQL service agent permission
+          # to use the CMEK key, which lives in t0-security, not the tenant
+          # project.
+          #
+          # Race, worked around by TenantProject's sqladmin-service-identity
+          # Job: this service agent doesn't exist on a brand-new project
+          # until Cloud SQL's own first-use flow lazily creates it, normally
+          # triggered by the cloudsql DatabaseInstance resource's own create
+          # call. If this grant's reconcile lands first, it 400s with
+          # "Service account ... does not exist" and depends entirely on
+          # Crossplane's retry backoff outlasting the race - observed NOT
+          # resolving within 15+ minutes on one tenant despite resolving in
+          # under a minute on others. TenantProject's sqladmin-service-identity
+          # force-provisions the same service agent explicitly instead of
+          # waiting on it as a side effect - a sibling sub-XR, not this one,
+          # since it's IAM/identity plumbing (see that Job's own comment).
+          - name: kms-key-cloudsql-iam
+            base:
+              apiVersion: kms.gcp.upbound.io/v1beta2
+              kind: CryptoKeyIAMMember
+              spec:
+                forProvider:
+                  role: roles/cloudkms.cryptoKeyEncrypterDecrypter
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-key-cloudsql-iam"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.cryptoKeyId
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "projects/t0-security/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.projectNumber
+                toFieldPath: spec.forProvider.member
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "serviceAccount:service-%s@gcp-sa-cloud-sql.iam.gserviceaccount.com"}
+
+          # Cloud SQL: PSC enabled, IAM DB auth, CMEK, PITR, sized by tier.
+          - name: cloudsql
+            base:
+              apiVersion: sql.gcp.upbound.io/v1beta2
+              kind: DatabaseInstance
+              spec:
+                forProvider:
+                  region: us-central1
+                  databaseVersion: POSTGRES_18
+                  deletionProtection: false
+                  settings:
+                    edition: ENTERPRISE
+                    ipConfiguration:
+                      ipv4Enabled: false
+                      pscConfig:
+                        - pscEnabled: true
+                          # Lets cloud-sql-proxy's --psc mode (see
+                          # tenant-workloads/composition.yaml's tei
+                          # Deployment) resolve this instance's PSC DNS
+                          # name - confirmed live that without this, the
+                          # proxy fails with "no such host" on the
+                          # *.sql.goog name it correctly derives from the
+                          # connection name, because nothing provisions
+                          # that DNS record otherwise. Requires
+                          # dns.googleapis.com enabled on t0-host-network
+                          # (see hyperverse/modules/network/main.tf).
+                          pscAutoDnsEnabled: true
+                          allowedConsumerProjects: ["${TENANT0_HOST_NETWORK_PROJECT_NUMBER}"]
+                          pscAutoConnections:
+                            - consumerNetwork: projects/t0-host-network/global/networks/t0-hyperverse-vpc
+                              consumerServiceProjectId: t0-host-network
+                    databaseFlags:
+                      - name: cloudsql.iam_authentication
+                        value: "on"
+                    backupConfiguration:
+                      enabled: true
+                      pointInTimeRecoveryEnabled: true
+                      transactionLogRetentionDays: 7
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-db"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.project
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.sizeTier
+                toFieldPath: spec.forProvider.settings.tier
+                transforms:
+                  - type: match
+                    match:
+                      patterns:
+                        - type: literal
+                          literal: small
+                          result: db-custom-1-3840
+                        - type: literal
+                          literal: medium
+                          result: db-custom-2-7680
+                        - type: literal
+                          literal: large
+                          result: db-custom-4-15360
+                      fallbackTo: Value
+                      fallbackValue: db-custom-1-3840
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.encryptionKeyName
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "projects/t0-security/locations/us-central1/keyRings/tenant0-keyring/cryptoKeys/t0-u-%s-key"}
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.connectionName
+                toFieldPath: status.cloudSqlConnectionName
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.settings.ipConfiguration.pscConfig[0].pscAutoConnections[0].ipAddress
+                toFieldPath: status.cloudSqlPscIpAddress
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.dnsNames[1].name
+                toFieldPath: status.cloudSqlPscDnsName
+
+          # One-shot Job that enables pgvector on the tenant's Cloud SQL
+          # instance. Runs as the tenant KSA (Workload Identity -> tenant
+          # GSA, created by sibling sub-XR TenantNetwork), fetches its own
+          # IAM token from the metadata server, looks up the instance's
+          # current PSC IP via the Cloud SQL Admin API (rather than trusting
+          # a Crossplane-patched IP that may not exist yet at render time),
+          # creates/grants its own IAM database user via that same API (the
+          # Crossplane User resource panics this provider on create for
+          # CLOUD_IAM_SERVICE_ACCOUNT users, worked around entirely here),
+          # then runs CREATE EXTENSION over psql using that IAM token as the
+          # password.
+          #
+          # In-script retry loop, not just Job-level backoffLimit: the
+          # instance reaching GCP API state RUNNABLE doesn't guarantee its
+          # PSC endpoint/IAM-auth path is immediately connectable - a real
+          # tenant hit exactly this, exhausting all 6 Job-level backoff
+          # attempts within the race window. Job-level retries recreate the
+          # whole pod (re-running apk/apt install every time, wasting most
+          # of each retry's time on package installation instead of
+          # actually waiting on the DB), so the fix is a bounded loop
+          # INSIDE the script around the real "is it ready" signal (the
+          # full describe -> create-user -> psql sequence), backed by
+          # backoffLimit only as an outer safety net that should now rarely
+          # if ever be needed. Switched off postgres:18 (Debian, apt-get)
+          # to postgres:18-alpine (apk) specifically to make package
+          # install fast enough that it's not worth avoiding per-attempt.
+          #
+          # Real bug caught on the first version of this loop (confirmed
+          # live on a real tenant, not assumed): CREATE USER is
+          # idempotent, so re-issuing it every attempt is safe, but doing
+          # so appears to reset a short IAM-auth-propagation window before
+          # psql against that user will actually authenticate - every
+          # attempt hit the exact same just-created-user unpropagated
+          # state and failed the same way, looping the full 10 attempts
+          # without ever letting propagation catch up. Fixed with an
+          # explicit `sleep 5` between create-user and psql within each
+          # attempt, restoring the buffer the original flat sleep 10
+          # provided, while keeping the bounded-retry structure for the
+          # separate "instance not RUNNABLE/connectable yet" race this loop
+          # also covers.
+          #
+          # Caveat (confirmed by deleting the real Cloud SQL instance and
+          # watching the reconcile): if this Job's underlying K8s Job is
+          # deleted out of band, provider-kubernetes does NOT self-heal it
+          # until its next poll cycle, unlike the GCP-backed resources
+          # above, which the provider re-creates immediately. A manual
+          # reconcile-nudge on this Object is needed to force it sooner.
+          - name: pgvector-migration
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                forProvider:
+                  manifest:
+                    apiVersion: batch/v1
+                    kind: Job
+                    metadata:
+                      name: pgvector-migration
+                    spec:
+                      backoffLimit: 6
+                      template:
+                        spec:
+                          restartPolicy: Never
+                          serviceAccountName: u-workload
+                          containers:
+                            - name: pgvector-migration
+                              image: postgres:18-alpine
+                              resources:
+                                requests: {cpu: 100m, memory: 128Mi}
+                              command: ["/bin/sh", "-c"]
+                              args:
+                                - |
+                                  set -e
+                                  apk add --no-cache curl jq >/dev/null
+                                  for i in $(seq 1 10); do
+                                    if TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | jq -r .access_token) \
+                                      && curl -sf -H "Authorization: Bearer $TOKEN" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE" -o /tmp/describe.json \
+                                      && IP=$(jq -r '.settings.ipConfiguration.pscConfig.pscAutoConnections[0].ipAddress' /tmp/describe.json) \
+                                      && curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"name\":\"$DB_USER\",\"type\":\"CLOUD_IAM_SERVICE_ACCOUNT\",\"databaseRoles\":[\"cloudsqlsuperuser\"]}" "https://sqladmin.googleapis.com/sql/v1beta4/projects/$GCP_PROJECT/instances/$GCP_INSTANCE/users" >/dev/null; then
+                                      sleep 5
+                                      if PGPASSWORD="$TOKEN" psql "host=$IP port=5432 sslmode=require dbname=postgres user=$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;"; then
+                                        exit 0
+                                      fi
+                                    fi
+                                    echo "attempt $i not ready yet, retrying in 15s"
+                                    sleep 15
+                                  done
+                                  echo "gave up after 10 attempts (150s)"
+                                  exit 1
+                              env:
+                                - {name: GCP_PROJECT, value: PLACEHOLDER}
+                                - {name: GCP_INSTANCE, value: PLACEHOLDER}
+                                - {name: DB_USER, value: PLACEHOLDER}
+                providerConfigRef:
+                  name: default
+                managementPolicies: ["*"]
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-pgvector-migration"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.metadata.namespace
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[0].value
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s"}
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.tenantName
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[1].value
+                transforms:
+                  - type: string
+                    string: {type: Format, fmt: "t0-u-%s-db"}
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.tenantName
+                    - fromFieldPath: spec.tenantName
+                  strategy: string
+                  string: {fmt: "t0-u-%s-sa@t0-u-%s.iam"}
+                toFieldPath: spec.forProvider.manifest.spec.template.spec.containers[0].env[2].value
