@@ -31,7 +31,8 @@ These made cache-miss *work at all* — without them there was nothing valid to 
 | 3 | Opus-assisted reasoning session diagnosed the untouched dial: `cloud-sql-proxy` CPU limit 100m→1000m (request kept at 50m — bumping the request too made the pod briefly unschedulable, reverted) | 1.07s (noise/regression) | 30.68s (still clamped) — but **avg 9.34s, median 8.42s, min 377ms** (down from min 3.4s) | 87.70% | First real movement in the *typical* case — confirmed connection-handshake cost was part of it, but the tail stayed pinned near the clamp |
 | 4 | `workloads_max_node_count` 4→5 (Terraform) | — | — | — | Pure headroom, not itself perf-tested in isolation — needed so the next change (PgBouncer, a 4th container) could schedule at all |
 | 5 | **PgBouncer sidecar** (transaction pooling, `app`'s 3 `psql` calls per miss now reuse pooled connections to `cloud-sql-proxy` instead of each paying a fresh TLS+IAM handshake) | 455.92ms | 30.23s (still clamped) — but **avg 4.12s, median 2.52s** (3.3x better than lever 3), **min 240ms** | 80.15% | Took 4 live sub-fixes to get working: ConfigMap-mount/apk install path collision, "should not run as root" (needed `su-exec` + explicit `adduser`, the apk package doesn't create the user outside its unused OpenRC script), `trust` auth still requiring a known username (added per-tenant `userlist.txt`), and a Crossplane field-path escaping bug (`userlist\.txt` created a nested key instead of the flat one PgBouncer needed — fixed with bracket notation) |
-| 6 | **`request_queue_size` 5→128** on both `edge-router`'s and `app`'s `http.server.ThreadingHTTPServer` | **329.3ms** | **13.18s** (finally moved off the 30s clamp) | **99.13%** | The actual remaining ceiling. Diagnosed by noticing `edge-router`'s own 502 count (549) matched k6's failed-check count exactly, while TEI's own logs showed every single embed completing in 10-90ms with near-zero queue time (ruling TEI out directly) and the `app` container logged zero errors (ruling its logic out). Python's `http.server` defaults to a TCP accept backlog of 5 — under 100+ concurrent connections, new connections queued at the OS accept level long enough to blow past the 30s client-side timeout, without either server ever seeing or logging the request |
+| 6 | **`request_queue_size` 5→128** on both `edge-router`'s and `app`'s `http.server.ThreadingHTTPServer` | 329.3ms | 13.18s (finally moved off the 30s clamp) | 99.13% | The actual remaining ceiling at the time. Diagnosed by noticing `edge-router`'s own 502 count (549) matched k6's failed-check count exactly, while TEI's own logs showed every single embed completing in 10-90ms with near-zero queue time (ruling TEI out directly) and the `app` container logged zero errors (ruling its logic out). Python's `http.server` defaults to a TCP accept backlog of 5 — under 100+ concurrent connections, new connections queued at the OS accept level long enough to blow past the 30s client-side timeout, without either server ever seeing or logging the request |
+| 7 | **Full rewrite of `app`** (`serving/app/`): stdlib `subprocess`-per-request (5 process forks/miss: 2 `redis-cli`, 3 `psql`) replaced with a persistent async service — `aiohttp` server, `psycopg3` async connection pool (prepared statements explicitly disabled, required for PgBouncer transaction-pooling compatibility — researched and chosen over `asyncpg` specifically because `asyncpg`'s auto-prepare breaks under real concurrency against a transaction-mode PgBouncer), `redis.asyncio` persistent connection. Prebuilt image (`serving/app/Dockerfile`), not apk+pip at pod startup — a diagnosed hot path shouldn't carry a PyPI network dependency on every restart. Design researched and produced by an Opus reasoning pass (current musl/Alpine wheel compatibility for each candidate driver, confirmed live by actually `pip install`-ing them before pinning versions) | **397.19ms** | **665.5ms** (20x better) | **100.00%** | The single biggest jump of the whole investigation. Confirmed zero subprocess spawning post-deploy (`ps aux` inside the running container shows only the one `python app.py` process). Behavior verified identical to the old implementation first (same cache-hit/miss JSON shape, same `nearest_match` semantics) before load-testing |
 
 ---
 
@@ -39,16 +40,17 @@ These made cache-miss *work at all* — without them there was nothing valid to 
 
 | Scenario | Target | Achieved | Gap |
 |---|---|---|---|
-| cache-hit p99 | < 150ms | 329.3ms | ~2.2x over |
-| cache-miss p99 | < 500ms | 13.18s | ~26x over |
-| Success rate | (implicit: requests complete) | 99.13% (was 64.23% at baseline) | — |
+| cache-hit p99 | < 150ms | 397.19ms | ~2.6x over |
+| cache-miss p99 | < 500ms | 665.5ms | ~1.3x over |
+| Success rate | (implicit: requests complete) | **100.00%** (was 64.23% at baseline) | — |
+| Actual throughput | 50 req/s | 45.5 req/s | close |
 
 ## Honest assessment of what's left
 
-The system now **works reliably under load** rather than failing under it — that's the real change across this investigation, even though the stated latency SLO isn't numerically met. The remaining gap is architectural, not a config knob:
+The rewrite (lever 7) closed nearly the entire remaining gap. What's left is small and specific, not a re-run of this whole investigation:
 
-- `app`'s per-request design spawns 5 subprocesses (2 `redis-cli`, 3 `psql`) per cache-miss, each a fresh OS process fork/exec. PgBouncer removed the *connection* cost; the *process-spawn* cost is still there every request.
-- A real fix is a rewrite: a persistent Python process holding one Postgres connection (or a small pool) and one Redis connection, instead of shelling out to CLIs per request — removing the subprocess overhead entirely, not just the connection overhead.
-- Everything in the serving path (`edge-router`, `app`, TEI) is a single replica; horizontal scaling was blocked this session by the `workloads` node pool's request-based scheduling ceiling, not by design.
+- Cache-miss is now dominated by real, unavoidable work (TEI inference + a pooled-but-real DB round trip), not artificial overhead — the ~1.3x-over-target gap is plausibly closeable with minor tuning (e.g. batching the upsert+similarity query into one round trip, or a slightly larger PgBouncer pool) rather than another architectural rewrite.
+- Cache-hit at ~2.6x over 150ms is mostly Redis round-trip + JSON (de)serialization + HTTP framing overhead on a single `edge-router`/`app` replica each — horizontal scaling (more replicas) was blocked this session by the `workloads` node pool's request-based scheduling ceiling, not by design, and is the more likely next lever if this is picked up again.
+- Everything in the serving path (`edge-router`, `app`, TEI) is still a single replica.
 
-Both are named, credible upgrade paths — not vague hand-waving — but out of scope for what could be safely iterated on before the GCP credit deadline.
+The system went from **64.23% success / cache-miss p99 in the tens of seconds** to **100% success / cache-miss p99 under 1 second** across this investigation — a real, evidenced improvement, not a cosmetic one.
