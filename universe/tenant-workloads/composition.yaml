@@ -105,8 +105,8 @@ spec:
                     string: {type: Format, fmt: "u-%s"}
 
           # PgBouncer, transaction-pooling to cloud-sql-proxy's local
-          # 5432 listener. Confirmed live (k6 + Opus reasoning) that the
-          # app's per-request psql invocations were each paying a fresh
+          # 5432 listener. Confirmed live that the app's per-request psql
+          # invocations were each paying a fresh
           # TLS+IAM handshake to Cloud SQL - this pools already-established
           # connections so a psql process reuses one instead. trust auth
           # both sides: fully loopback, single-tenant-pod boundary, same
@@ -173,21 +173,20 @@ spec:
                   string: {fmt: "\"t0-u-%s-sa@t0-u-%s.iam\" \"\""}
                 toFieldPath: spec.forProvider.manifest.data[userlist.txt]
 
-          # TEI (Text Embeddings Inference) embedding service, per exec plan
-          # §8.1/§8.2 - image built and pushed by serving/tei/Dockerfile,
-          # model weights baked in at build time (see that file's comment).
-          # Runs as the tenant KSA (u-workload, Workload Identity -> tenant
-          # GSA, created by sibling sub-XR TenantNetwork) so the Auth Proxy
-          # sidecar below can authenticate to Cloud SQL as that tenant's own
-          # identity - no stored password (design doc §5.2c).
+          # TEI (Text Embeddings Inference) embedding service - image built
+          # and pushed by serving/tei/Dockerfile, model weights baked in at
+          # build time (see that file's comment). Runs as the tenant KSA
+          # (u-workload, Workload Identity -> tenant GSA, created by
+          # sibling sub-XR TenantNetwork) so the Auth Proxy sidecar below
+          # can authenticate to Cloud SQL as that tenant's own identity -
+          # no stored password.
           #
           # cloud-sql-proxy sidecar: connects over PSC (--psc) with
           # automatic IAM DB authentication (--auto-iam-authn), listening on
           # 127.0.0.1:5432 inside the pod network namespace. The app layer
-          # built in a later step (§8.4's end-to-end wiring) talks to
-          # Postgres at that local address exactly like a normal local DB,
-          # the proxy handles the IAM token exchange and PSC connection
-          # transparently.
+          # talks to Postgres at that local address exactly like a normal
+          # local DB, the proxy handles the IAM token exchange and PSC
+          # connection transparently.
           #
           # Requires cloud-sql-proxy 2.18.2+ (see the image tag below):
           # confirmed live that 2.14.2's --psc derives a stale
@@ -262,12 +261,12 @@ spec:
                                 - --psc
                                 - PLACEHOLDER
                               resources:
-                                # Limit (not request) bumped - Opus reasoning
-                                # + k6 evidence (CPU bumps elsewhere did
-                                # nothing to cache-miss) points here: this
-                                # does a fresh TLS+IAM handshake per new
-                                # connection, and the app spawns 3 brand-new
-                                # psql connections per miss. Request stays
+                                # Limit (not request) bumped: this proxy does
+                                # a fresh TLS+IAM handshake per new
+                                # connection, which was a real bottleneck
+                                # under load when the app made several new
+                                # connections per request (now moot - app
+                                # holds a persistent pool). Request stays
                                 # 50m - the workloads node pool is already
                                 # near its request-based scheduling ceiling
                                 # (confirmed live: bumping the request too
@@ -299,15 +298,14 @@ spec:
                                 - name: pgbouncer-config
                                   mountPath: /etc/pgbouncer-src
                             - name: app
-                              # Rewritten (exec plan §8.5 follow-up):
-                              # confirmed live via k6 that the previous
+                              # Confirmed live that the previous
                               # subprocess-per-request design (apk-installed
                               # psql/redis-cli shelled out to per call, 5
                               # process forks per cache-miss) was the real
                               # remaining latency ceiling after CPU limits
-                              # and PgBouncer pooling had already been fixed
-                              # - see serving/k6/RESULTS.md. This image
-                              # holds one persistent async Postgres pool
+                              # and PgBouncer pooling had already been
+                              # fixed. This image holds one persistent
+                              # async Postgres pool
                               # (psycopg3, prepared statements disabled -
                               # required for PgBouncer transaction pooling)
                               # and one persistent async Redis connection
@@ -329,8 +327,8 @@ spec:
                                 # burst headroom for fork/exec storms) - an
                                 # async event loop with persistent
                                 # connections doesn't have that burst
-                                # profile. Revisit with real numbers if k6
-                                # shows throttling again.
+                                # profile. Revisit with real numbers if load
+                                # testing shows throttling again.
                                 requests: {cpu: 100m, memory: 128Mi}
                                 limits: {cpu: 500m, memory: 256Mi}
                 providerConfigRef:
@@ -356,11 +354,13 @@ spec:
                   - type: match
                     match:
                       patterns:
-                        # small bumped 1 -> 2: confirmed live via k6 that
-                        # cache-miss (real TEI inference) was CPU-throttled
-                        # even with node CPU at ~20% actual use. This is the
-                        # TEI CPU limit only, unrelated to tenant-database's
-                        # separate Cloud SQL tier mapping - no DB resize.
+                        # small bumped 1 -> 2 while diagnosing an unrelated
+                        # bottleneck - later confirmed TEI itself was never
+                        # actually CPU-throttled (real bottleneck was
+                        # elsewhere in the request path), left at 2 since
+                        # it's harmless headroom. This is the TEI CPU limit
+                        # only, unrelated to tenant-database's separate
+                        # Cloud SQL tier mapping - no DB resize.
                         - {type: literal, literal: small, result: "2"}
                         - {type: literal, literal: medium, result: "2"}
                         - {type: literal, literal: large, result: "4"}
@@ -392,8 +392,8 @@ spec:
                       name: tei
                     spec:
                       selector: {app: tei}
-                      # Targets the app container (§8.4 orchestrator), not
-                      # TEI directly - TEI is now an internal-only sidecar
+                      # Targets the app container (the request orchestrator),
+                      # not TEI directly - TEI is an internal-only sidecar
                       # the app calls over localhost. Same Service name/DNS
                       # (tei.u-<tenant>.svc.cluster.local) edge-router
                       # already proxies to, so no edge-router change needed.

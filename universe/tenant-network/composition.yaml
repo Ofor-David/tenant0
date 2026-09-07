@@ -69,16 +69,16 @@ spec:
                       policyTypes: [Ingress, Egress]
                       ingress:
                         - from: [{podSelector: {}}]
-                        # edge-router (ns-platform, exec plan §8.3) proxies
-                        # to this namespace's tei Service after resolving
-                        # the caller's API key to this tenant. Port 8000, not
+                        # edge-router (ns-platform) proxies to this
+                        # namespace's tei Service after resolving the
+                        # caller's API key to this tenant. Port 8000, not
                         # 80 - confirmed live that NetworkPolicy ports match
                         # the pod's real containerPort, not the Service's
                         # port; tei-service's targetPort is 8000 (the app
-                        # container, exec plan §8.4), so a rule for 80 here
-                        # silently dropped everything with no error on
-                        # either side. No other port needed - the shared
-                        # edge has no reason to reach anything else in here
+                        # container), so a rule for 80 here silently
+                        # dropped everything with no error on either side.
+                        # No other port needed - the shared edge has no
+                        # reason to reach anything else in here
                         # (Redis, Cloud SQL PSC).
                         - from:
                             - namespaceSelector:
@@ -287,7 +287,7 @@ spec:
                   - type: string
                     string: {type: Format, fmt: "serviceAccount:t0-host-network.svc.id.goog[u-%s/u-workload]"}
 
-          # Grants edge-router (ns-platform, exec plan §8.3) get access to
+          # Grants edge-router (ns-platform) get access to
           # ONLY this tenant's tenant-api-key Secret. The ClusterRole it
           # references (edge-router-secret-reader, hyperverse/platform) is
           # itself a template with no cluster-wide effect - binding it via a
