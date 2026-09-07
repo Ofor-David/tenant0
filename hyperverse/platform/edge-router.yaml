@@ -1,4 +1,4 @@
-# Shared serving-path edge (exec plan §8.3, design §5.3a). Singleton,
+# Shared serving-path edge. Singleton,
 # not per-tenant, so it lives here as plain kubectl-applied manifests rather
 # than a Crossplane Composition in universe/ - matches the "hyperverse
 # implementation, not universe" call for the Gateway API groundwork.
@@ -169,8 +169,7 @@ data:
                 return
             if key_tenant != tenant:
                 # Key is real, but for a different tenant than the path
-                # targets - the exact cross-tenant rejection design §5.3a
-                # calls for.
+                # targets - explicit cross-tenant rejection.
                 self.send_response(403)
                 self.end_headers()
                 return
@@ -216,8 +215,8 @@ data:
         except Exception as e:
             print(f"initial refresh failed: {e}", flush=True)
         threading.Thread(target=_refresh_loop, daemon=True).start()
-        # Default TCP accept backlog is 5 - confirmed live via k6 that under
-        # a burst of 100+ concurrent connections, new connections queued at
+        # Default TCP accept backlog is 5 - confirmed live that under a
+        # burst of 100+ concurrent connections, new connections queued at
         # the OS accept level long enough to blow past a 30s client timeout,
         # showing up as 502s even though the app behind this never errored
         # (it never got the connection in time to even try).
@@ -249,8 +248,8 @@ spec:
           livenessProbe:
             httpGet: {path: /health, port: 8080}
           resources:
-            # 1000m limit, same reasoning/evidence as app's own resources
-            # comment (tenant-workloads/composition.yaml) - k6 showed this
+            # 1000m limit, same reasoning as app's own resources comment
+            # (tenant-workloads/composition.yaml) - confirmed live this
             # tier throttling badly under real load despite spare node CPU.
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: 1000m, memory: 256Mi}

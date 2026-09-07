@@ -40,7 +40,3 @@ service-account*.json
 .vscode/
 .idea/
 .claude/
-
-# k6 output
-k6-results/
-*.k6.json

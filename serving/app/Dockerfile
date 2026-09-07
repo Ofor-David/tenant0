@@ -1,9 +1,9 @@
 # Replaces the previous subprocess-per-request design (python:3.12-alpine +
-# apk-installed psql/redis-cli shelled out to on every request) - diagnosed
-# live via k6 that spawning 5 OS processes per cache-miss was the real
-# remaining latency ceiling after CPU limits and connection pooling had
-# already been fixed (see serving/k6/RESULTS.md). This holds one persistent
-# Postgres pool and one persistent Redis connection instead.
+# apk-installed psql/redis-cli shelled out to on every request) - confirmed
+# live that spawning 5 OS processes per cache-miss was the real remaining
+# latency ceiling after CPU limits and connection pooling had already been
+# fixed. This holds one persistent Postgres pool and one persistent Redis
+# connection instead.
 #
 # All three deps ship musllinux_1_2 wheels - confirmed live via `pip install`
 # on this exact base image before pinning: no compiler, no apk build-base,

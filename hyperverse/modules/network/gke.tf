@@ -32,9 +32,9 @@ resource "google_container_cluster" "hyperverse" {
   # Immutable field: any change here forces full cluster replacement.
   datapath_provider = "ADVANCED_DATAPATH"
 
-  # GKE-managed Gateway API controller, needed for exec plan §8.3 (per-tenant
-  # API-key routing at the edge). STANDARD channel tracks the stable Gateway
-  # API CRD set; not immutable, safe to enable on the existing cluster.
+  # GKE-managed Gateway API controller, needed for per-tenant API-key
+  # routing at the edge. STANDARD channel tracks the stable Gateway API
+  # CRD set; not immutable, safe to enable on the existing cluster.
   gateway_api_config {
     channel = "CHANNEL_STANDARD"
   }

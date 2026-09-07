@@ -84,8 +84,8 @@ resource "google_compute_subnetwork" "psc_endpoints" {
   ip_cidr_range = "10.40.0.0/24"
 }
 
-# Required by gke-l7-regional-external-managed (exec plan §8.3's edge
-# Gateway) - confirmed live: the Gateway controller's SYNC failed with
+# Required by gke-l7-regional-external-managed (the edge Gateway) -
+# confirmed live: the Gateway controller's SYNC failed with
 # "An active proxy-only subnetwork is required in the same region and VPC
 # as the forwarding rule" until this existed. Google reserves this range
 # for the regional external ALB's own Envoy proxies, not tenant traffic -

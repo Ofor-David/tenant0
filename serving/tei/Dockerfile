@@ -5,9 +5,8 @@
 # would technically allow the runtime pull (see universe/tenant-network/
 # composition.yaml's broad 443 egress rule).
 #
-# CPU only, no GPU node pool in this cluster - matches design doc §5.5
-# (quantized embedding model, CPU serving is the deliberate choice, not a
-# fallback).
+# CPU only, no GPU node pool in this cluster - quantized embedding model,
+# CPU serving is the deliberate choice, not a fallback.
 ARG MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
 
 FROM python:3.11-slim AS fetch
